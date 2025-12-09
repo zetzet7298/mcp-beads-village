@@ -1,6 +1,6 @@
 {
   "name": "beads-village",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "MCP server for multi-agent workflow with Beads + Agent Mail",
   "keywords": [
     "mcp",
@@ -23,7 +23,8 @@
   "files": [
     "bin/",
     "beads_village/*.py",
-    "README.md"
+    "README.md",
+    "AGENTS-LITE.md"
   ],
   "engines": {
     "node": ">=16.0.0"

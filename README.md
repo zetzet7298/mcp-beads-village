@@ -158,6 +158,30 @@ add(title="Login form", desc="Uses /auth/login API from BE", typ="feature")
 | **Storage** | Each workspace has `.beads/`, `.mail/`, `.reservations/` |
 | **Cross-team** | Switch → read with `ls()`, `show()` → switch back |
 
+## Cross-Workspace Messaging
+
+Agents in **different workspaces** can communicate via the **Global Mail Hub**:
+
+```python
+# BE agent broadcasts API completion to ALL agents
+broadcast(subj="Auth API ready", body="POST /auth/login available. Returns JWT.")
+
+# FE agent in different workspace receives the broadcast
+inbox()  # Automatically includes global messages
+# [{"f":"agent-be","s":"Auth API ready","ws":"/projects/api","global":true}]
+
+# Discover all active agents across workspaces
+discover()
+# {"agents":[{"agent":"agent-be","ws":"/projects/api"},{"agent":"agent-fe","ws":"/projects/web"}]}
+```
+
+| Tool | Description |
+|------|-------------|
+| `broadcast(subj, body)` | Send to ALL agents across ALL workspaces |
+| `msg(..., global=true)` | Send message to global hub |
+| `inbox(global=true)` | Receive from local + global (default) |
+| `discover()` | Find all active agents and workspaces |
+
 ## Workflow
 
 ```
@@ -187,16 +211,9 @@ init() → claim() → reserve() → [work] → done() → RESTART
 | **Workflow** | `init`, `claim`, `done` | Task lifecycle |
 | **Issues** | `add`, `ls`, `ready`, `show` | CRUD operations |
 | **File Locking** | `reserve`, `release`, `reservations` | Conflict prevention |
-| **Messaging** | `msg`, `inbox` | Agent coordination |
-| **Maintenance** | `sync`, `cleanup`, `doctor`, `status` | Housekeeping |
-
-## Troubleshooting
-
-| Problem | Solution |
-|---------|----------|
-| `bd CLI not found` | `go install github.com/steveyegge/beads/cmd/bd@latest` |
-| Stale reservations | Run `init()` to cleanup expired |
-| >200 open issues | Run `cleanup(days=2)` |
+| **Messaging** | `msg`, `inbox`, `broadcast` | Agent coordination |
+| **Discovery** | `discover`, `status` | Find agents/workspaces |
+| **Maintenance** | `sync`, `cleanup`, `doctor` | Housekeeping |
 
 ## Environment Variables
 
@@ -204,7 +221,90 @@ init() → claim() → reserve() → [work] → done() → RESTART
 |----------|---------|-------------|
 | `BEADS_AGENT` | `agent-{pid}` | Agent name |
 | `BEADS_WS` | Current dir | Workspace path |
+| `BEADS_TEAM` | `default` | Team/project name (isolates messaging between projects) |
 | `BEADS_USE_DAEMON` | `1` | Use daemon if available |
+
+## Team Setup (Create/Join Team)
+
+Teams group related agents working on the same project. **Teams are created automatically** when the first agent joins.
+
+### Creating/Joining a Team
+
+Use `init(team="...")` to join or create a team:
+
+```python
+# Join/create team "my-project"
+init(team="my-project")
+# Returns: {"ok":1, "agent":"agent-001", "ws":"/path", "team":"my-project", "available_teams":["default","my-project"]}
+
+# Now agent is in team "my-project"
+discover()  # See other agents in this team
+broadcast(subj="Hello", body="I joined!")  # Send to all team members
+```
+
+### Multi-Agent Team Example
+
+```python
+# Agent 1 (Backend, workspace /api)
+init(team="ecommerce")
+# → joins team "ecommerce", team is created automatically
+
+# Agent 2 (Frontend, workspace /web)  
+init(team="ecommerce")
+# → joins existing team "ecommerce"
+
+# Agent 3 (Mobile, workspace /mobile)
+init(team="ecommerce")
+# → joins existing team "ecommerce"
+
+# All 3 agents can now:
+discover()   # See each other
+broadcast()  # Send to all
+inbox()      # Receive team messages
+```
+
+### Team Data Storage
+
+```
+~/.beads-village/
+├── ecommerce/          # Team A's shared data
+│   ├── mail/           # Team A broadcasts only
+│   └── agents/         # Team A agent registry
+├── internal-tools/     # Team B (completely isolated)
+│   ├── mail/           
+│   └── agents/         
+└── default/            # Default team (unassigned agents)
+    ├── mail/
+    └── agents/
+```
+
+### Switching Teams
+
+Agent can switch between teams in the same session:
+
+```python
+# Working in team alpha, need to check team beta
+init(team="beta")
+inbox()  # See beta messages
+discover()  # See beta agents
+
+# Switch back to alpha
+init(team="alpha")
+broadcast(subj="Done", body="Finished checking beta")
+```
+
+### Key Points
+
+| Aspect | Behavior |
+|--------|----------|
+| **Default team** | `default` - all agents without team specified |
+| **Team isolation** | Agents only see teammates' broadcasts and registry |
+| **Local messaging** | `.mail/` in workspace - only this workspace |
+| **Team messaging** | `broadcast()` or `msg(global=true)` - all team workspaces |
+| **Switching teams** | Use `init(team="...")` - no restart needed! |
+| **Available teams** | Check `init()` response → `available_teams` field |
+
+See [AGENTS.md](AGENTS.md#-team-setup) for detailed team patterns and examples.
 
 ## Daemon Support (Optional)
 
@@ -225,6 +325,17 @@ Falls back to CLI automatically if daemon is not running.
 
 - [Beads CLI](https://github.com/steveyegge/beads)
 - [Best Practices](https://steve-yegge.medium.com/beads-best-practices-2db636b9760c)
+- [Quick Reference](AGENTS-LITE.md) - Token-optimized guide for LLMs
+- [Full Documentation](AGENTS.md) - Detailed workflows and patterns
+
+## Changelog
+
+### v1.1.0 (Token Optimization)
+
+- **Tool descriptions reduced by ~50%** - Compact, LLM-friendly descriptions
+- **Instructions reduced by ~80%** - Essential workflow only in MCP initialize
+- **Added AGENTS-LITE.md** - 1.3KB quick reference (vs 16KB full docs)
+- All tests passing
 
 ## License
 

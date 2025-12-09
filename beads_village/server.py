@@ -32,6 +32,42 @@ AGENT = os.environ.get("BEADS_AGENT", f"agent-{os.getpid()}")
 # Each workspace has its own .beads/, .mail/, .reservations/
 WS = os.environ.get("BEADS_WS", os.getcwd())
 
+# Team/Project identifier - groups related workspaces together
+# Agents in the same team can see each other's broadcasts
+# Different teams are completely isolated
+# Default: "default" (all agents in same team)
+# Can be changed via init(team=...) at runtime
+TEAM = os.environ.get("BEADS_TEAM", "default")
+
+# Base directory for all team data
+BEADS_VILLAGE_BASE = os.environ.get(
+    "BEADS_VILLAGE_BASE",
+    os.path.join(os.path.expanduser("~"), ".beads-village")
+)
+
+# Global mail hub - shared across workspaces IN THE SAME TEAM
+# Default: ~/.beads-village/{team}/mail
+def _get_team_mail_dir(team: str = None):
+    """Get mail directory for a team."""
+    t = team or TEAM
+    return os.path.join(BEADS_VILLAGE_BASE, t, "mail")
+
+# Agent registry - tracks active agents IN THE SAME TEAM
+def _get_team_registry_dir(team: str = None):
+    """Get agent registry directory for a team."""
+    t = team or TEAM
+    return os.path.join(BEADS_VILLAGE_BASE, t, "agents")
+
+def get_available_teams() -> List[str]:
+    """List all available teams (directories in ~/.beads-village/)."""
+    teams = []
+    if os.path.isdir(BEADS_VILLAGE_BASE):
+        for name in os.listdir(BEADS_VILLAGE_BASE):
+            team_dir = os.path.join(BEADS_VILLAGE_BASE, name)
+            if os.path.isdir(team_dir):
+                teams.append(name)
+    return sorted(teams)
+
 # Prefer daemon over CLI for faster operations (set BEADS_USE_DAEMON=0 to disable)
 USE_DAEMON = os.environ.get("BEADS_USE_DAEMON", "1") == "1"
 
@@ -272,6 +308,27 @@ def ensure_dir(base: str, name: str) -> str:
     return d
 
 
+def global_mail_dir() -> str:
+    """Global mail directory - shared across ALL workspaces IN CURRENT TEAM.
+    
+    Messages sent here are visible to agents in any workspace within the team.
+    Used for cross-workspace coordination.
+    """
+    d = _get_team_mail_dir(TEAM)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def agent_registry_dir() -> str:
+    """Agent registry directory - tracks active agents IN CURRENT TEAM.
+    
+    Each agent registers with: agent_id, workspace, capabilities, last_seen.
+    """
+    d = _get_team_registry_dir(TEAM)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 def mail_dir() -> str:
     """Mail directory - in current workspace."""
     return ensure_dir(WS, ".mail")
@@ -375,8 +432,18 @@ def try_atomic_reserve(path: str, reservation: dict) -> tuple:
 # ============================================================================
 
 async def send_msg(subj: str, body: str = "", to: str = "all", 
-                   thread_id: str = "", importance: str = "normal") -> dict:
-    """Send message to other agents."""
+                   thread_id: str = "", importance: str = "normal",
+                   global_broadcast: bool = False) -> dict:
+    """Send message to other agents.
+    
+    Args:
+        subj: Message subject
+        body: Message body
+        to: Recipient ('all' for broadcast, or specific agent ID)
+        thread_id: Thread ID for grouping messages
+        importance: 'low', 'normal', or 'high'
+        global_broadcast: If True, send to global mail hub (visible to ALL agents across ALL workspaces)
+    """
     msg = {
         "f": AGENT,
         "t": to,
@@ -385,63 +452,179 @@ async def send_msg(subj: str, body: str = "", to: str = "all",
         "ts": datetime.now().isoformat(),
         "thread": thread_id or S.issue or "",
         "imp": importance,
-        "issue": S.issue
+        "issue": S.issue,
+        "ws": WS,  # Include source workspace
     }
     ts = datetime.now().timestamp()
     unique = uuid.uuid4().hex[:6]
-    p = os.path.join(mail_dir(), f"{ts:.6f}_{unique}.json")
+    
+    # Choose directory: local workspace or global hub
+    target_dir = global_mail_dir() if global_broadcast else mail_dir()
+    p = os.path.join(target_dir, f"{ts:.6f}_{unique}.json")
+    
     with open(p, "w", encoding="utf-8") as f:
         json.dump(msg, f)
-    return {"sent": 1}
-
-
-async def recv_msgs(n: int = 5, unread_only: bool = False) -> List[dict]:
-    """Receive messages from other agents."""
-    d = mail_dir()
-    msgs = []
-    read_file = os.path.join(d, f".read_{AGENT}")
-    read_ts = 0.0
     
-    if os.path.exists(read_file):
+    return {"sent": 1, "global": global_broadcast}
+
+
+async def recv_msgs(n: int = 5, unread_only: bool = False, 
+                    include_global: bool = True) -> List[dict]:
+    """Receive messages from other agents.
+    
+    Args:
+        n: Maximum messages to return
+        unread_only: Only return unread messages
+        include_global: Also check global mail hub for cross-workspace messages
+    """
+    msgs = []
+    
+    # Collect from directories
+    dirs_to_check = [mail_dir()]
+    if include_global:
+        dirs_to_check.append(global_mail_dir())
+    
+    for d in dirs_to_check:
+        read_file = os.path.join(d, f".read_{AGENT}")
+        read_ts = 0.0
+        
+        if os.path.exists(read_file):
+            try:
+                with open(read_file, encoding="utf-8") as f:
+                    read_ts = float(f.read().strip())
+            except (OSError, ValueError):
+                read_ts = 0.0
+        
         try:
-            with open(read_file, encoding="utf-8") as f:
-                read_ts = float(f.read().strip())
-        except (OSError, ValueError):
-            read_ts = 0.0
+            files = sorted(os.listdir(d))
+            for fname in files[-50:]:
+                if not fname.endswith(".json") or fname.startswith("."):
+                    continue
+                try:
+                    fp = os.path.join(d, fname)
+                    with open(fp, encoding="utf-8") as file:
+                        m = json.load(file)
+                    
+                    if m.get("t") not in ["all", AGENT]:
+                        continue
+                    
+                    if unread_only:
+                        ts_part = fname.replace(".json", "").split("_")[0]
+                        try:
+                            file_ts = float(ts_part)
+                            if file_ts <= read_ts:
+                                continue
+                        except ValueError:
+                            pass
+                    
+                    # Mark if from global hub
+                    if d == global_mail_dir():
+                        m["_global"] = True
+                    
+                    msgs.append(m)
+                except (json.JSONDecodeError, OSError):
+                    pass
+        except OSError:
+            pass
+        
+        # Update read timestamp for this directory
+        if msgs:
+            try:
+                with open(read_file, "w", encoding="utf-8") as f:
+                    f.write(str(datetime.now().timestamp()))
+            except OSError:
+                pass
+    
+    # Sort by timestamp and return last n
+    msgs.sort(key=lambda x: x.get("ts", ""))
+    return msgs[-n:]
+
+
+# ============================================================================
+# AGENT REGISTRY FUNCTIONS
+# ============================================================================
+
+def register_agent(capabilities: List[str] = None) -> dict:
+    """Register this agent in the team registry.
+    
+    Other agents in the same team can discover us and see what workspace we're in.
+    """
+    reg_file = os.path.join(agent_registry_dir(), f"{AGENT}.json")
+    
+    registration = {
+        "agent": AGENT,
+        "ws": WS,
+        "team": TEAM,
+        "capabilities": capabilities or ["general"],
+        "registered": datetime.now().isoformat(),
+        "last_seen": datetime.now().isoformat(),
+    }
+    
+    with open(reg_file, "w", encoding="utf-8") as f:
+        json.dump(registration, f)
+    
+    return registration
+
+
+def update_agent_heartbeat() -> None:
+    """Update last_seen timestamp for this agent."""
+    reg_file = os.path.join(agent_registry_dir(), f"{AGENT}.json")
+    
+    if os.path.exists(reg_file):
+        try:
+            with open(reg_file, encoding="utf-8") as f:
+                reg = json.load(f)
+            reg["last_seen"] = datetime.now().isoformat()
+            with open(reg_file, "w", encoding="utf-8") as f:
+                json.dump(reg, f)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+
+def get_active_agents(max_age_minutes: int = 30) -> List[dict]:
+    """Get list of active agents across all workspaces.
+    
+    Args:
+        max_age_minutes: Consider agent inactive if not seen within this time
+    """
+    agents = []
+    cutoff = datetime.now() - timedelta(minutes=max_age_minutes)
     
     try:
-        files = sorted(os.listdir(d))
-        for fname in files[-50:]:
-            if not fname.endswith(".json") or fname.startswith("."):
+        for fname in os.listdir(agent_registry_dir()):
+            if not fname.endswith(".json"):
                 continue
             try:
-                fp = os.path.join(d, fname)
-                with open(fp, encoding="utf-8") as file:
-                    m = json.load(file)
-                
-                if m.get("t") not in ["all", AGENT]:
-                    continue
-                
-                if unread_only:
-                    ts_part = fname.replace(".json", "").split("_")[0]
-                    try:
-                        file_ts = float(ts_part)
-                        if file_ts <= read_ts:
-                            continue
-                    except ValueError:
-                        pass
-                
-                msgs.append(m)
-            except (json.JSONDecodeError, OSError):
+                with open(os.path.join(agent_registry_dir(), fname), encoding="utf-8") as f:
+                    reg = json.load(f)
+                last_seen = datetime.fromisoformat(reg.get("last_seen", "2000-01-01"))
+                if last_seen > cutoff:
+                    agents.append(reg)
+            except (json.JSONDecodeError, OSError, ValueError):
                 pass
     except OSError:
         pass
     
-    if msgs:
-        with open(read_file, "w", encoding="utf-8") as f:
-            f.write(str(datetime.now().timestamp()))
+    return agents
+
+
+def discover_workspaces() -> List[dict]:
+    """Discover all workspaces from registered agents in the same team.
     
-    return msgs[-n:]
+    Returns unique workspaces with their active agent counts.
+    """
+    agents = get_active_agents()
+    ws_map = {}
+    
+    for agent in agents:
+        ws = agent.get("ws", "")
+        if ws:
+            if ws not in ws_map:
+                ws_map[ws] = {"ws": ws, "agents": [], "count": 0, "team": TEAM}
+            ws_map[ws]["agents"].append(agent.get("agent", "unknown"))
+            ws_map[ws]["count"] += 1
+    
+    return list(ws_map.values())
 
 
 # ============================================================================
@@ -530,18 +713,26 @@ async def tool_init(args: dict) -> str:
 
     Args:
         ws: Workspace directory to join. Each workspace is independent.
+        team: Team/project name to join. Can switch teams at runtime.
     """
-    global WS
+    global WS, TEAM
 
     # Switch to specified workspace
     if args.get("ws"):
         WS = os.path.abspath(args["ws"])
 
+    # Switch to specified team (allows runtime team switching!)
+    if args.get("team"):
+        TEAM = args["team"]
+
     # Ensure workspace directory exists
     if not os.path.isdir(WS):
+        # List available teams as hint
+        available_teams = get_available_teams()
         return j({
             "error": f"workspace not found: {WS}",
-            "hint": "Provide a valid directory path with ws parameter, or ensure current directory exists."
+            "hint": "Provide a valid directory path with ws parameter, or ensure current directory exists.",
+            "available_teams": available_teams
         })
 
     # Init beads in this workspace
@@ -551,7 +742,7 @@ async def tool_init(args: dict) -> str:
         if "already" not in err_msg.lower():
             return j({
                 "error": err_msg,
-                "hint": "Ensure 'bd' CLI is installed: go install github.com/beads-project/beads/cmd/bd@latest"
+                "hint": "Ensure 'bd' CLI is installed: go install github.com/steveyegge/beads/cmd/bd@latest"
             })
 
     # Ensure mail and reservation dirs
@@ -560,14 +751,25 @@ async def tool_init(args: dict) -> str:
 
     # Clean up any expired reservations
     cleanup_expired_reservations()
+    
+    # Register agent in global registry (for cross-workspace discovery)
+    register_agent(capabilities=["general"])
 
-    # Announce agent joining this workspace
-    await send_msg("join", f"Agent {AGENT} joined workspace")
+    # Announce agent joining this workspace (local)
+    await send_msg("join", f"Agent {AGENT} joined workspace {WS}")
+    
+    # Also announce globally so other workspaces know
+    await send_msg("join", f"Agent {AGENT} joined workspace {WS}", global_broadcast=True)
+
+    # Get available teams for user reference
+    available_teams = get_available_teams()
 
     return j({
         "ok": 1,
         "agent": AGENT,
         "ws": WS,
+        "team": TEAM,
+        "available_teams": available_teams,
         "hint": "Workspace ready. Use 'claim' to get a task, or 'ready' to see available tasks."
     })
 
@@ -996,49 +1198,108 @@ async def tool_msg(args: dict) -> str:
     to = args.get("to", "all")
     thread_id = args.get("thread", S.issue or "")
     importance = args.get("importance", "normal")
+    global_broadcast = args.get("global", False)
     
-    await send_msg(subj, body, to, thread_id, importance)
+    result = await send_msg(subj, body, to, thread_id, importance, global_broadcast)
     
-    return j({"ok": 1})
+    return j({"ok": 1, "global": global_broadcast})
 
 
 async def tool_inbox(args: dict) -> str:
     """Get messages from other agents."""
     n = args.get("n", 5)
     unread = args.get("unread", False)
+    include_global = args.get("global", True)  # Default: include global messages
     
-    msgs = await recv_msgs(n, unread)
+    msgs = await recv_msgs(n, unread, include_global)
     
     items = [{
         "f": m.get("f", ""),
         "s": m.get("s", ""),
         "b": m.get("b", "")[:100],
         "ts": m.get("ts", ""),
-        "imp": m.get("imp", "normal")
+        "imp": m.get("imp", "normal"),
+        "ws": m.get("ws", ""),  # Source workspace
+        "global": m.get("_global", False),  # Is from global hub
     } for m in msgs]
     
     return j(items)
 
 
+async def tool_broadcast(args: dict) -> str:
+    """Broadcast message to ALL agents across ALL workspaces.
+    
+    Use this for important announcements that all agents need to see,
+    regardless of which workspace they're in.
+    """
+    subj = args.get("subj", "")
+    if not subj:
+        return j({"error": "subj required"})
+    
+    body = args.get("body", "")
+    importance = args.get("importance", "high")  # Default high for broadcasts
+    
+    result = await send_msg(subj, body, "all", S.issue or "", importance, global_broadcast=True)
+    
+    return j({"ok": 1, "broadcast": True, "hint": "Message sent to all agents in team"})
+
+
+async def tool_discover(_args: dict) -> str:
+    """Discover all active agents and workspaces in the same team.
+    
+    Returns list of active agents with their workspaces, useful for
+    cross-workspace coordination within your team/project.
+    """
+    # Update our heartbeat
+    update_agent_heartbeat()
+    
+    agents = get_active_agents()
+    workspaces = discover_workspaces()
+    
+    return j({
+        "team": TEAM,
+        "agents": [{
+            "agent": a.get("agent", ""),
+            "ws": a.get("ws", ""),
+            "capabilities": a.get("capabilities", []),
+            "last_seen": a.get("last_seen", ""),
+        } for a in agents],
+        "workspaces": workspaces,
+        "total_agents": len(agents),
+        "total_workspaces": len(workspaces),
+    })
+
+
 async def tool_status(_args: dict) -> str:
-    """Get village status overview."""
+    """Get village status overview including cross-workspace agents."""
+    # Update our heartbeat
+    update_agent_heartbeat()
+    
     # Get open issues count
     lst = await bd("list", "--status", "open")
     open_count = len(lst) if isinstance(lst, list) else 0
     
-    # Get active reservations
+    # Get active reservations (local workspace)
     reservations = get_active_reservations()
+    
+    # Get agents across ALL workspaces
+    all_agents = get_active_agents()
+    workspaces = discover_workspaces()
     
     # Session duration
     mins = (datetime.now() - S.start).total_seconds() / 60
     
     return j({
         "agent": AGENT,
+        "ws": WS,
+        "team": TEAM,
         "open": open_count,
         "warn": open_count > 200,
         "current": S.issue,
         "reserved": len(S.reserved_files),
-        "active_agents": len(set(r.get("agent", "") for r in reservations)),
+        "local_agents": len(set(r.get("agent", "") for r in reservations)),
+        "team_agents": len(all_agents),
+        "workspaces": len(workspaces),
         "min": round(mins, 1),
         "done": S.done
     })
@@ -1052,371 +1313,200 @@ TOOLS = {
     # Core workflow
     "init": {
         "fn": tool_init,
-        "desc": "Initialize or join a Beads workspace for multi-agent task coordination. Creates .beads/, .mail/, and .reservations/ directories. Call this first before using other tools. Returns agent ID and workspace path.",
+        "desc": "Join workspace. MUST call first. Returns agent ID, workspace, team.",
         "input": {
             "type": "object",
             "properties": {
-                "ws": {
-                    "type": "string",
-                    "description": "Absolute path to workspace directory. Each workspace has isolated task database, messages, and file locks. Defaults to current directory if not specified."
-                }
+                "ws": {"type": "string", "description": "Workspace path (default: cwd)"},
+                "team": {"type": "string", "description": "Team name to join (default: 'default')"}
             },
             "required": []
         },
-        "annotations": {
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": True
-        }
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
     },
     "claim": {
         "fn": tool_claim,
-        "desc": "Claim the next available ready task (highest priority first, no blockers). Automatically syncs with git, marks task as in_progress, and notifies other agents. Returns task details including id, title, priority. Use this to get work assigned.",
-        "input": {
-            "type": "object",
-            "properties": {},
-            "required": []
-        },
-        "annotations": {
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": False,
-            "openWorldHint": True
-        }
+        "desc": "Claim next ready task (highest priority). Auto-syncs, marks in_progress.",
+        "input": {"type": "object", "properties": {}, "required": []},
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True}
     },
     "done": {
         "fn": tool_done,
-        "desc": "Mark a task as completed and sync changes. Automatically releases all file reservations held by this agent. Notifies other agents of completion. After calling done, restart session for best performance (1 task = 1 session pattern).",
+        "desc": "Complete task. Auto-releases files, syncs. Restart session after.",
         "input": {
             "type": "object",
             "properties": {
-                "id": {
-                    "type": "string",
-                    "description": "Issue ID to close. If not specified, uses the currently claimed task from this session."
-                },
-                "msg": {
-                    "type": "string",
-                    "description": "Completion message describing what was done. Example: 'Implemented login feature with OAuth2'"
-                }
+                "id": {"type": "string", "description": "Issue ID to close"},
+                "msg": {"type": "string", "description": "What was done"}
             },
             "required": ["id"]
         },
-        "annotations": {
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": True
-        }
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
     },
     "add": {
         "fn": tool_add,
-        "desc": "Create a new issue/task. Use this for any work that takes >2 minutes to avoid losing track. IMPORTANT: Always include a description explaining WHY this issue exists and WHAT needs to be done. Issues without descriptions lack context for future work.",
+        "desc": "Create issue. Include desc for context.",
         "input": {
             "type": "object",
             "properties": {
-                "title": {
-                    "type": "string",
-                    "description": "Clear, actionable title. Example: 'Fix authentication timeout on slow networks'"
-                },
-                "desc": {
-                    "type": "string",
-                    "description": "Issue description explaining: WHY it exists, WHAT needs to be done, HOW you discovered it. Example: 'Login fails with 500 error when password has special characters. Found during auth testing.'"
-                },
-                "typ": {
-                    "type": "string",
-                    "description": "Issue type: 'task' (default), 'bug', 'feature', 'epic', or 'chore'"
-                },
-                "pri": {
-                    "type": "integer",
-                    "description": "Priority 0-4. 0=critical (drop everything), 1=high, 2=normal (default), 3=low, 4=backlog"
-                },
-                "deps": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Dependencies in format 'type:id' or just 'id'. Types: blocks, related, parent-child, discovered-from. Example: ['discovered-from:bd-123', 'blocks:bd-456']"
-                },
-                "parent": {
-                    "type": "string",
-                    "description": "Parent issue ID to link as 'discovered-from' dependency. Defaults to current task if in a session. Ignored if deps is provided."
-                }
+                "title": {"type": "string", "description": "Actionable title"},
+                "desc": {"type": "string", "description": "Why/what/how context"},
+                "typ": {"type": "string", "description": "task|bug|feature|epic|chore"},
+                "pri": {"type": "integer", "description": "0=critical,1=high,2=normal,3=low,4=backlog"},
+                "deps": {"type": "array", "items": {"type": "string"}, "description": "type:id format"},
+                "parent": {"type": "string", "description": "Parent issue ID"}
             },
             "required": ["title"]
         },
-        "annotations": {
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": False,
-            "openWorldHint": True
-        }
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True}
     },
-
     # Issue queries
     "ls": {
         "fn": tool_ls,
-        "desc": "List issues with filtering and pagination. Returns id, title, priority, status for each issue. Use status='open' for active work, 'closed' for completed, 'all' for everything.",
+        "desc": "List issues. Returns id,t,p,s per issue.",
         "input": {
             "type": "object",
             "properties": {
-                "status": {
-                    "type": "string",
-                    "description": "Filter by status: 'open' (default), 'closed', 'in_progress', or 'all'"
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum issues to return (default: 10, max: 50)"
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "Skip first N issues for pagination (default: 0)"
-                }
+                "status": {"type": "string", "description": "open|closed|in_progress|all"},
+                "limit": {"type": "integer", "description": "Max results (default:10)"},
+                "offset": {"type": "integer", "description": "Skip N issues"}
             },
             "required": []
         },
-        "annotations": {
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": True
-        }
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
     },
     "ready": {
         "fn": tool_ready,
-        "desc": "Get issues that are ready to work on (no blocking dependencies). These are the tasks that can be claimed immediately. Sorted by priority (0=highest). Use this to see available work.",
+        "desc": "Get claimable tasks (no blockers). Sorted by priority.",
         "input": {
             "type": "object",
-            "properties": {
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum issues to return (default: 5, max: 20)"
-                }
-            },
+            "properties": {"limit": {"type": "integer", "description": "Max results (default:5)"}},
             "required": []
         },
-        "annotations": {
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": True
-        }
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
     },
     "show": {
         "fn": tool_show,
-        "desc": "Get full details of a specific issue including title, description, status, priority, dependencies, comments, and history. Use this to understand task requirements before starting work.",
+        "desc": "Get full issue details.",
         "input": {
             "type": "object",
-            "properties": {
-                "id": {
-                    "type": "string",
-                    "description": "Issue ID to retrieve (e.g., 'abc123')"
-                }
-            },
+            "properties": {"id": {"type": "string", "description": "Issue ID"}},
             "required": ["id"]
         },
-        "annotations": {
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": True
-        }
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
     },
-
     # Maintenance
     "cleanup": {
         "fn": tool_cleanup,
-        "desc": "Remove old closed issues to keep the database lean. Run every few days to maintain <200 open issues. Syncs changes to git after cleanup. Returns count of deleted issues.",
+        "desc": "Remove old closed issues. Run every few days.",
         "input": {
             "type": "object",
-            "properties": {
-                "days": {
-                    "type": "integer",
-                    "description": "Delete issues closed more than N days ago (default: 2)"
-                }
-            },
+            "properties": {"days": {"type": "integer", "description": "Delete closed >N days (default:2)"}},
             "required": []
         },
-        "annotations": {
-            "readOnlyHint": False,
-            "destructiveHint": True,
-            "idempotentHint": True,
-            "openWorldHint": True
-        }
+        "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": True, "openWorldHint": True}
     },
     "doctor": {
         "fn": tool_doctor,
-        "desc": "Check and repair Beads database health. Fixes orphaned dependencies, invalid states, and data inconsistencies. Run periodically or when experiencing issues. Returns health report with fixes applied.",
-        "input": {
-            "type": "object",
-            "properties": {},
-            "required": []
-        },
-        "annotations": {
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": True
-        }
+        "desc": "Check/repair database health.",
+        "input": {"type": "object", "properties": {}, "required": []},
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
     },
     "sync": {
         "fn": tool_sync,
-        "desc": "Synchronize Beads database with git repository. Pulls latest changes from other agents and pushes local changes. Use after making changes or before claiming new work.",
-        "input": {
-            "type": "object",
-            "properties": {},
-            "required": []
-        },
-        "annotations": {
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": True
-        }
+        "desc": "Sync with git. Pull/push changes.",
+        "input": {"type": "object", "properties": {}, "required": []},
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
     },
-
     # File reservations
     "reserve": {
         "fn": tool_reserve,
-        "desc": "Reserve files for exclusive editing to prevent conflicts with other agents. Check reservations before editing shared files. Reservations auto-expire after TTL. Returns granted paths and any conflicts with other agents.",
+        "desc": "Lock files for editing. Prevents conflicts.",
         "input": {
             "type": "object",
             "properties": {
-                "paths": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "File paths to reserve. Example: ['src/auth.py', 'src/utils.py']"
-                },
-                "ttl": {
-                    "type": "integer",
-                    "description": "Time-to-live in seconds (default: 600 = 10 minutes). Reservation expires after this time."
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "Reason for reservation. Example: 'implementing OAuth login flow'"
-                }
+                "paths": {"type": "array", "items": {"type": "string"}, "description": "Files to lock"},
+                "ttl": {"type": "integer", "description": "Seconds until expiry (default:600)"},
+                "reason": {"type": "string", "description": "Why reserving"}
             },
             "required": ["paths"]
         },
-        "annotations": {
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": False,
-            "openWorldHint": False
-        }
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}
     },
     "release": {
         "fn": tool_release,
-        "desc": "Release file reservations so other agents can edit them. Call when done editing files. If no paths specified, releases all reservations held by this agent. Reservations are also auto-released when calling done().",
+        "desc": "Unlock files. Auto-released on done().",
         "input": {
             "type": "object",
-            "properties": {
-                "paths": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Specific file paths to release. If empty, releases all reservations held by this agent."
-                }
-            },
+            "properties": {"paths": {"type": "array", "items": {"type": "string"}, "description": "Files to unlock (empty=all)"}},
             "required": []
         },
-        "annotations": {
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False
-        }
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
     },
     "reservations": {
         "fn": tool_reservations,
-        "desc": "List all active file reservations across all agents. Shows who is editing which files and when reservations expire. Use this to check for potential conflicts before editing.",
-        "input": {
-            "type": "object",
-            "properties": {},
-            "required": []
-        },
-        "annotations": {
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False
-        }
+        "desc": "List active file locks. Check before editing.",
+        "input": {"type": "object", "properties": {}, "required": []},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
     },
-
     # Messaging
     "msg": {
         "fn": tool_msg,
-        "desc": "Send a message to other agents in the workspace. Use for coordination, asking questions, or sharing status updates. Messages are stored in .mail/ and visible to all agents or specific recipients.",
+        "desc": "Send message. Set global=true for cross-workspace.",
         "input": {
             "type": "object",
             "properties": {
-                "subj": {
-                    "type": "string",
-                    "description": "Message subject. Example: 'Need help with auth module'"
-                },
-                "body": {
-                    "type": "string",
-                    "description": "Message body with details"
-                },
-                "to": {
-                    "type": "string",
-                    "description": "Recipient agent ID, or 'all' for broadcast (default: 'all')"
-                },
-                "thread": {
-                    "type": "string",
-                    "description": "Thread ID for grouping related messages. Defaults to current issue ID."
-                },
-                "importance": {
-                    "type": "string",
-                    "description": "Message priority: 'low', 'normal' (default), or 'high'"
-                }
+                "subj": {"type": "string", "description": "Subject"},
+                "body": {"type": "string", "description": "Message body"},
+                "to": {"type": "string", "description": "Recipient or 'all'"},
+                "thread": {"type": "string", "description": "Thread ID"},
+                "importance": {"type": "string", "description": "low|normal|high"},
+                "global": {"type": "boolean", "description": "Send to all workspaces"}
             },
             "required": ["subj"]
         },
-        "annotations": {
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": False,
-            "openWorldHint": False
-        }
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}
     },
     "inbox": {
         "fn": tool_inbox,
-        "desc": "Retrieve messages from other agents. Returns sender, subject, body snippet, timestamp, and importance. Check inbox periodically for coordination messages and updates.",
+        "desc": "Get messages. Includes global by default.",
         "input": {
             "type": "object",
             "properties": {
-                "n": {
-                    "type": "integer",
-                    "description": "Maximum messages to return (default: 5)"
-                },
-                "unread": {
-                    "type": "boolean",
-                    "description": "If true, only return unread messages (default: false)"
-                }
+                "n": {"type": "integer", "description": "Max messages (default:5)"},
+                "unread": {"type": "boolean", "description": "Unread only"},
+                "global": {"type": "boolean", "description": "Include cross-workspace"}
             },
             "required": []
         },
-        "annotations": {
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False
-        }
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
     },
-
+    "broadcast": {
+        "fn": tool_broadcast,
+        "desc": "Message all agents in team across workspaces.",
+        "input": {
+            "type": "object",
+            "properties": {
+                "subj": {"type": "string", "description": "Subject"},
+                "body": {"type": "string", "description": "Message body"},
+                "importance": {"type": "string", "description": "low|normal|high"}
+            },
+            "required": ["subj"]
+        },
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True}
+    },
+    "discover": {
+        "fn": tool_discover,
+        "desc": "Find active agents in team.",
+        "input": {"type": "object", "properties": {}, "required": []},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
+    },
     # Status
     "status": {
         "fn": tool_status,
-        "desc": "Get overview of workspace status including: open issue count (warn if >200), current task, reserved files count, active agents count, session duration, and completed tasks. Use to understand workspace state.",
-        "input": {
-            "type": "object",
-            "properties": {},
-            "required": []
-        },
-        "annotations": {
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": True
-        }
+        "desc": "Workspace overview: issues, task, agents, reservations.",
+        "input": {"type": "object", "properties": {}, "required": []},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
     },
 }
 
@@ -1439,41 +1529,15 @@ async def handle_request(req: dict) -> Optional[dict]:
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "beads-village", "version": "2.0"},
-                "instructions": """Beads Village MCP - Multi-agent issue tracking and coordination.
+                "instructions": """Beads Village MCP - Multi-agent task coordination.
 
-WORKFLOW (follow this order):
-1. init()              - Initialize workspace (REQUIRED first step)
-2. claim()             - Get next ready task (auto-assigns to you)
-3. reserve(paths=[...]) - Lock files before editing (prevents conflicts)
-4. [do your work]      - Implement the task
-5. add(title="...")    - Create issues for any work >2 minutes found
-6. done(id="...", msg="...") - Complete task, release locks, sync
-7. RESTART SESSION     - Best practice: 1 task = 1 session
+WORKFLOW: init() → claim() → reserve() → work → done() → restart session
 
-IMPORTANT RULES:
-- ALWAYS run init() before using other tools
-- ALWAYS reserve files before editing them
-- ALWAYS create issues for discovered work (don't lose track)
-- After done(), restart session for best performance
-- Keep <200 open issues, run cleanup() every few days
+RULES: init first | reserve before edit | add issues for >2min work
 
-MULTI-AGENT COORDINATION:
-- reserve(paths=["src/api.py"]) before editing
-- Check reservations() to see what others are editing
-- Use msg(subj="...", body="...") to communicate
-- Check inbox() periodically for messages
+RESPONSE: id=ID, t=title, p=pri(0-4), s=status, f=from, b=body
 
-PRIORITY LEVELS: 0=critical, 1=high, 2=normal, 3=low, 4=backlog
-ISSUE TYPES: task, bug, epic, story
-
-RESPONSE FORMAT (token-optimized):
-- id=issue ID, t=title, p=priority, s=status
-- f=from, b=body, ts=timestamp
-
-MULTI-WORKSPACE:
-- Each codebase = separate workspace
-- init(ws="/path/to/repo") to join specific workspace
-- Report workspace path so other agents can join same workspace"""
+TEAMS: init(team="x") to join | broadcast() for team-wide msgs"""
             }
         }
     

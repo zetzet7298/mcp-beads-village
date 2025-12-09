@@ -43,15 +43,15 @@ def test_add_tool_schema():
     
     print(f"[OK] Properties: {list(props.keys())}")
     
-    # Check desc description
+    # Check desc description (token-optimized)
     desc_desc = props['desc']['description']
-    assert 'WHY' in desc_desc or 'description' in desc_desc.lower()
-    print(f"[OK] desc: {desc_desc[:60]}...")
+    assert len(desc_desc) > 0, "desc description should not be empty"
+    print(f"[OK] desc: {desc_desc}")
     
-    # Check deps description
+    # Check deps description (token-optimized)
     deps_desc = props['deps']['description']
-    assert 'discovered-from' in deps_desc or 'Dependencies' in deps_desc
-    print(f"[OK] deps: {deps_desc[:60]}...")
+    assert len(deps_desc) > 0, "deps description should not be empty"
+    print(f"[OK] deps: {deps_desc}")
     
     return True
 
