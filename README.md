@@ -2,7 +2,9 @@
 
 Multi-agent MCP server for **task coordination** and **file locking** between AI agents.
 
-Combines [Beads](https://github.com/steveyegge/beads) (issue tracking) + Agent Mail (messaging) to enable multiple agents to work on the same codebase without conflicts.
+Combines [Beads](https://github.com/steveyegge/beads) (issue tracking) + built-in Agent Mail (messaging) to enable multiple agents to work on the same codebase without conflicts.
+
+> 💡 **Note:** Messaging is built-in. No external mail server required. Inspired by [MCP Agent Mail](https://github.com/Dicklesworthstone/mcp_agent_mail) concept.
 
 ## Use Cases
 
@@ -11,49 +13,33 @@ Combines [Beads](https://github.com/steveyegge/beads) (issue tracking) + Agent M
 - **File conflict prevention**: Lock files before editing to prevent merge conflicts
 - **Cross-agent communication**: Send messages between agents for coordination
 
-## Prerequisites
+---
 
-### Required: Install Beads CLI
+## Quick Start
 
-Beads Village requires the **Beads CLI** (`bd`) to be installed on your machine:
-
-```bash
-# Install via pip
-pip install beads
-
-# Verify installation
-bd --version
-```
-
-> ⚠️ **Important**: Without Beads CLI installed, the MCP server will not function properly.
-
-### System Requirements
-
-- **Python**: 3.8+
-- **Node.js**: 16+ (for npx)
-- **Git**: For syncing between agents
-
-## Installation
+### 1. Install Prerequisites
 
 ```bash
-# Option 1: npx (recommended)
-npx beads-village
-
-# Option 2: npm global
-npm install -g beads-village
-
-# Option 3: pip
-pip install beads-village
+pip install beads    # Required: Beads CLI
+node --version       # Required: Node.js 16+
 ```
 
-## Configuration
+### 2. Install Beads Village
 
-### Claude Desktop
+```bash
+npx beads-village    # Recommended
+# or: npm install -g beads-village
+# or: pip install beads-village
+```
 
-**Config file location:**
-- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-- **Linux**: `~/.config/Claude/claude_desktop_config.json`
+### 3. Configure Your IDE/Agent
+
+<details>
+<summary><strong>Claude Desktop</strong></summary>
+
+Edit `claude_desktop_config.json`:
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
 ```json
 {
@@ -65,31 +51,16 @@ pip install beads-village
   }
 }
 ```
+</details>
 
-### Claude Code (CLI)
-
-Add MCP server using the Claude CLI command:
+<details>
+<summary><strong>Claude Code (CLI)</strong></summary>
 
 ```bash
-# Add for current project only
-claude mcp add beads-village --scope local -- npx beads-village
-
-# Add for all projects (user scope)
-claude mcp add beads-village --scope user -- npx beads-village
-
-# Add as shared project config (.mcp.json)
-claude mcp add beads-village --scope project -- npx beads-village
+claude mcp add beads-village -- npx beads-village
 ```
 
-**Scope options:**
-| Scope | Description |
-|-------|-------------|
-| `local` | Available only to you in the current project (default) |
-| `project` | Shared with everyone in the project via `.mcp.json` file |
-| `user` | Available to you across all projects |
-
-Or manually create `.mcp.json` in your project root:
-
+Or create `.mcp.json` in project root:
 ```json
 {
   "mcpServers": {
@@ -100,24 +71,12 @@ Or manually create `.mcp.json` in your project root:
   }
 }
 ```
+</details>
 
-### Cursor
+<details>
+<summary><strong>Cursor</strong></summary>
 
-**Method 1: Via Settings UI**
-
-1. Open Cursor Settings (`Ctrl+,` / `Cmd+,`)
-2. Search for "MCP"
-3. Navigate to **Features > MCP Servers**
-4. Click **Add Server**
-5. Configure:
-   - **Name**: `beads-village`
-   - **Command**: `npx`
-   - **Args**: `beads-village`
-
-**Method 2: Via config file**
-
-Create or edit `.cursor/mcp.json` in your project root:
-
+Create `.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
@@ -128,17 +87,12 @@ Create or edit `.cursor/mcp.json` in your project root:
   }
 }
 ```
+</details>
 
-Or for global configuration, edit `~/.cursor/mcp.json` (create if not exists).
+<details>
+<summary><strong>GitHub Copilot (VS Code)</strong></summary>
 
-### GitHub Copilot (VS Code)
-
-GitHub Copilot supports MCP servers via VS Code settings.
-
-**Method 1: Via settings.json**
-
-Add to your VS Code `settings.json` (`Ctrl+,` → Open Settings JSON):
-
+Add to VS Code `settings.json`:
 ```json
 {
   "github.copilot.chat.mcp.servers": {
@@ -149,126 +103,82 @@ Add to your VS Code `settings.json` (`Ctrl+,` → Open Settings JSON):
   }
 }
 ```
+</details>
 
-**Method 2: Via workspace config**
+<details>
+<summary><strong>More IDEs (OpenCode, Cline, Roo Code, Zed, Continue...)</strong></summary>
 
-Create `.vscode/mcp.json` in your project:
+See **[📖 Full Setup Guide](docs/SETUP.md)** for complete configuration instructions for all supported IDEs and agents.
 
-```json
-{
-  "servers": {
-    "beads-village": {
-      "command": "npx",
-      "args": ["beads-village"]
-    }
-  }
-}
+</details>
+
+---
+
+## Workflow
+
+```
+init() → claim() → reserve() → [work] → done() → RESTART
 ```
 
-> ⚠️ **Note**: MCP support in GitHub Copilot requires VS Code and may require the "MCP servers in Copilot" policy to be enabled by your organization admin.
+| Step | Description |
+|------|-------------|
+| `init()` | Join workspace (call FIRST) |
+| `claim()` | Get next task |
+| `reserve()` | Lock files before editing |
+| `done()` | Complete task, release locks |
+| RESTART | New session for next task |
 
-### Amp Code
+📖 **[Detailed Workflow Guide](docs/WORKFLOW.md)** - Patterns, examples, best practices
 
-**Method 1: Via CLI (recommended)**
+---
 
-```bash
-# Add to current workspace
-amp mcp add --workspace beads-village -- npx beads-village
+## Documentation Guide
 
-# Add globally (user settings)
-amp mcp add beads-village -- npx beads-village
+Choose the right documentation for your AI model:
+
+| Document | Best For | Size |
+|----------|----------|------|
+| **[AGENTS-LITE.md](AGENTS-LITE.md)** | High-capability models (Claude 3.5+, GPT-4+, Gemini Pro) with limited context | ~1.5KB |
+| **[AGENTS.md](AGENTS.md)** | All models, comprehensive reference with examples | ~16KB |
+| **[docs/SETUP.md](docs/SETUP.md)** | Setup instructions for all IDEs/agents | ~6KB |
+| **[docs/WORKFLOW.md](docs/WORKFLOW.md)** | Workflow patterns and best practices | ~5KB |
+
+### When to Use Which
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Model Capability                          │
+├─────────────────────────────────────────────────────────────┤
+│  HIGH (Claude 3.5+, GPT-4o, Gemini 1.5 Pro)                 │
+│  └─→ Use AGENTS-LITE.md (minimal tokens, maximum signal)    │
+│                                                              │
+│  MEDIUM (Claude 3 Haiku, GPT-4o-mini, smaller models)       │
+│  └─→ Use AGENTS.md (detailed examples needed)               │
+│                                                              │
+│  LARGE CONTEXT (128K+ tokens available)                      │
+│  └─→ Use AGENTS.md (comprehensive reference)                │
+│                                                              │
+│  LIMITED CONTEXT (<32K tokens)                               │
+│  └─→ Use AGENTS-LITE.md (save tokens for code)              │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-**Method 2: Via workspace settings**
+---
 
-Create `.amp/settings.json` in your project root:
+## Tools Overview
 
-```json
-{
-  "amp.mcpServers": {
-    "beads-village": {
-      "command": "npx",
-      "args": ["beads-village"]
-    }
-  }
-}
-```
+| Category | Tools | Description |
+|----------|-------|-------------|
+| **Lifecycle** | `init`, `claim`, `done` | Task workflow |
+| **Issues** | `add`, `assign`, `ls`, `ready`, `show` | Task management |
+| **Files** | `reserve`, `release`, `reservations` | Conflict prevention |
+| **Messages** | `msg`, `inbox`, `broadcast` | Agent communication |
+| **Status** | `discover`, `status` | Team visibility |
+| **Maintenance** | `sync`, `cleanup`, `doctor` | Housekeeping |
 
-**Method 3: Via VS Code settings**
+---
 
-Add to `.vscode/settings.json`:
-
-```json
-{
-  "amp.mcpServers": {
-    "beads-village": {
-      "command": "npx",
-      "args": ["beads-village"]
-    }
-  }
-}
-```
-
-### Kilo Code
-
-Kilo Code supports MCP servers via its settings in VS Code.
-
-**Method 1: Via Kilo Code Settings UI**
-
-1. Open VS Code Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`)
-2. Search for "Kilo Code: Open Settings"
-3. Navigate to **MCP Servers** section
-4. Click **Add Server**
-5. Configure:
-   - **Name**: `beads-village`
-   - **Type**: `stdio`
-   - **Command**: `npx`
-   - **Args**: `["beads-village"]`
-
-**Method 2: Via settings.json**
-
-Add to your VS Code `settings.json`:
-
-```json
-{
-  "kilocode.mcpServers": {
-    "beads-village": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["beads-village"]
-    }
-  }
-}
-```
-
-### Windsurf
-
-Add to your Windsurf MCP configuration (`~/.windsurf/mcp.json` or project-level):
-
-```json
-{
-  "mcpServers": {
-    "beads-village": {
-      "command": "npx",
-      "args": ["beads-village"]
-    }
-  }
-}
-```
-
-### Configuration Summary
-
-| Client | Config Location | Config Key |
-|--------|-----------------|------------|
-| Claude Desktop | `claude_desktop_config.json` | `mcpServers` |
-| Claude Code | `.mcp.json` or CLI | `mcpServers` |
-| Cursor | `.cursor/mcp.json` | `mcpServers` |
-| GitHub Copilot | `settings.json` or `.vscode/mcp.json` | `github.copilot.chat.mcp.servers` |
-| Amp Code | `.amp/settings.json` or `.vscode/settings.json` | `amp.mcpServers` |
-| Kilo Code | VS Code `settings.json` | `kilocode.mcpServers` |
-| Windsurf | `~/.windsurf/mcp.json` | `mcpServers` |
-
-## How It Works
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -284,208 +194,28 @@ Add to your Windsurf MCP configuration (`~/.windsurf/mcp.json` or project-level)
    └─────────┘    └──────────┘      └────────────┘
 ```
 
-All agents share task queue, messages, and file locks through Git-synced directories.
+---
 
-## Issue Types & Priorities
+## Configuration Summary
 
-### Types
+| Client | Config Location | Config Key |
+|--------|-----------------|------------|
+| Claude Desktop | `claude_desktop_config.json` | `mcpServers` |
+| Claude Code | `.mcp.json` | `mcpServers` |
+| Cursor | `.cursor/mcp.json` | `mcpServers` |
+| GitHub Copilot | `settings.json` | `github.copilot.chat.mcp.servers` |
+| Amp Code | `.amp/settings.json` | `amp.mcpServers` |
+| Kilo Code | `settings.json` | `kilocode.mcpServers` |
+| Windsurf | `~/.windsurf/mcp.json` | `mcpServers` |
+| OpenCode | `opencode.json` | `mcpServers` |
+| Cline | Cline settings | `mcpServers` |
+| Roo Code | Roo settings | `mcpServers` |
+| Zed | Zed settings | `context_servers` |
+| Continue | `config.yaml` | `mcpServers` |
 
-| Type | Use For | Example |
-|------|---------|---------|
-| `task` | General work item (default) | "Refactor auth module" |
-| `bug` | Defect to fix | "Login fails with special chars" |
-| `feature` | New functionality | "Add OAuth2 login" |
-| `epic` | Large work with sub-issues | "User authentication system" |
-| `story` | User-facing feature | "As a user, I can reset password" |
-| `chore` | Maintenance, cleanup | "Update dependencies" |
+📖 **[Complete Setup Instructions](docs/SETUP.md)**
 
-### Priority Levels
-
-| Priority | Meaning | When to Use |
-|----------|---------|-------------|
-| 0 | Critical | Production down, security issue |
-| 1 | High | Blocking other work |
-| 2 | Medium | Normal priority (default) |
-| 3 | Low | Nice to have |
-| 4 | Backlog | Future consideration |
-
-## Creating Issues
-
-**Always include a description** - issues without context are harder to work on later:
-
-```python
-# Basic issue
-add(title="Fix login bug", typ="bug", pri=1)
-
-# With description (recommended)
-add(
-    title="Fix login bug",
-    desc="Login fails with 500 error when password has special characters. Found during auth testing.",
-    typ="bug",
-    pri=1
-)
-
-# With role tags (for multi-agent coordination)
-add(
-    title="Implement login form",
-    desc="Create React login component using /auth/login API",
-    typ="feature",
-    tags=["fe"]  # Only FE agents will claim this task
-)
-
-# Backend task
-add(
-    title="Add /auth/login endpoint",
-    desc="POST endpoint, returns JWT token",
-    typ="feature",
-    tags=["be"]  # Only BE agents will claim this task
-)
-
-# With dependencies
-add(
-    title="Add password validation",
-    desc="Frontend validation for password strength",
-    typ="feature",
-    deps=["discovered-from:bd-42", "blocks:bd-50"]
-)
-```
-
-### Role Tags
-
-Use tags to assign tasks to specific agent roles. Agents with matching roles will automatically claim these tasks.
-
-| Tag | Role | Example Tasks |
-|-----|------|---------------|
-| `fe` | Frontend | UI components, forms, styling |
-| `be` | Backend | APIs, database, business logic |
-| `mobile` | Mobile | iOS/Android apps |
-| `devops` | DevOps | CI/CD, infrastructure, deployment |
-| `qa` | QA | Testing, test automation |
-
-### Dependency Types
-
-| Type | Meaning | Example |
-|------|---------|---------|
-| `discovered-from` | Found while working on another issue | `deps=["discovered-from:bd-42"]` |
-| `blocks` | This issue blocks another | `deps=["blocks:bd-50"]` |
-| `related` | Related but not blocking | `deps=["related:bd-45"]` |
-| `parent-child` | Sub-issue of epic | `deps=["parent-child:bd-10"]` |
-
-## Multi-Agent Workflow
-
-### Leader-Based Task Assignment
-
-A **leader agent** can create and assign tasks to specific roles:
-
-```python
-# Leader agent initializes with leader=true
-init(team="my-project", leader=true)
-
-# Create tasks with role tags
-add(title="Add login form", tags=["fe"], pri=1)
-add(title="Create /auth/login API", tags=["be"], pri=1)
-add(title="Add login screen", tags=["mobile"], pri=2)
-
-# Or explicitly assign existing tasks
-assign(id="bd-1", role="fe")
-assign(id="bd-2", role="be")
-```
-
-### Role-Based Agents
-
-Worker agents join with their role to automatically receive relevant tasks:
-
-```python
-# FE agent in /web workspace
-init(team="my-project", role="fe")
-claim()  # Automatically gets tasks tagged with "fe"
-
-# BE agent in /api workspace
-init(team="my-project", role="be")
-claim()  # Automatically gets tasks tagged with "be"
-
-# Mobile agent in /mobile workspace
-init(team="my-project", role="mobile")
-claim()  # Automatically gets tasks tagged with "mobile"
-```
-
-### Cross-Workspace Communication
-
-Agents can **switch between workspaces** to read tasks from other teams:
-
-```python
-# FE agent joins BE workspace to see their APIs
-init(ws="/projects/api")
-ls(status="closed")  # See completed tasks
-show(id="bd-1")      # Read API details
-
-# Switch back to FE workspace
-init(ws="/projects/web")
-add(title="Login form", desc="Uses /auth/login API from BE", typ="feature")
-```
-
-| Aspect | Behavior |
-|--------|----------|
-| **Switching** | `init(ws="/path")` changes workspace |
-| **Storage** | Each workspace has `.beads/`, `.mail/`, `.reservations/` |
-| **Cross-team** | Switch → read with `ls()`, `show()` → switch back |
-
-## Cross-Workspace Messaging
-
-Agents in **different workspaces** can communicate via the **Global Mail Hub**:
-
-```python
-# BE agent broadcasts API completion to ALL agents
-broadcast(subj="Auth API ready", body="POST /auth/login available. Returns JWT.")
-
-# FE agent in different workspace receives the broadcast
-inbox()  # Automatically includes global messages
-# [{"f":"agent-be","s":"Auth API ready","ws":"/projects/api","global":true}]
-
-# Discover all active agents across workspaces
-discover()
-# {"agents":[{"agent":"agent-be","ws":"/projects/api"},{"agent":"agent-fe","ws":"/projects/web"}]}
-```
-
-| Tool | Description |
-|------|-------------|
-| `broadcast(subj, body)` | Send to ALL agents across ALL workspaces |
-| `msg(..., global=true)` | Send message to global hub |
-| `inbox(global=true)` | Receive from local + global (default) |
-| `discover()` | Find all active agents and workspaces |
-
-## Workflow
-
-```
-init() → claim() → reserve() → [work] → done() → RESTART
-```
-
-1. **init()** - Join workspace
-2. **claim()** - Get next available task
-3. **reserve()** - Lock files before editing
-4. **[work]** - Do the actual work
-5. **done()** - Complete task, release locks
-6. **RESTART** - Start new session (recommended)
-
-## Best Practices
-
-| Practice | Why |
-|----------|-----|
-| **One task per session** | Restart after `done()` for clean state |
-| **Always reserve before editing** | Prevents merge conflicts |
-| **File issues for side-discoveries** | `add(title="...", typ="bug")` immediately |
-| **Keep <200 open issues** | Run `cleanup(days=2)` regularly |
-
-## Tools
-
-| Category | Tools | Description |
-|----------|-------|-------------|
-| **Workflow** | `init`, `claim`, `done` | Task lifecycle |
-| **Issues** | `add`, `assign`, `ls`, `ready`, `show` | CRUD operations |
-| **File Locking** | `reserve`, `release`, `reservations` | Conflict prevention |
-| **Messaging** | `msg`, `inbox`, `broadcast` | Agent coordination |
-| **Discovery** | `discover`, `status` | Find agents/workspaces |
-| **Maintenance** | `sync`, `cleanup`, `doctor` | Housekeeping |
+---
 
 ## Environment Variables
 
@@ -493,162 +223,57 @@ init() → claim() → reserve() → [work] → done() → RESTART
 |----------|---------|-------------|
 | `BEADS_AGENT` | `agent-{pid}` | Agent name |
 | `BEADS_WS` | Current dir | Workspace path |
-| `BEADS_TEAM` | `default` | Team/project name (isolates messaging between projects) |
+| `BEADS_TEAM` | `default` | Team name |
 | `BEADS_USE_DAEMON` | `1` | Use daemon if available |
 
-## Team Setup (Create/Join Team)
-
-Teams group related agents working on the same project. **Teams are created automatically** when the first agent joins.
-
-### Creating/Joining a Team
-
-Use `init(team="...")` to join or create a team:
-
-```python
-# Join/create team "my-project"
-init(team="my-project")
-# Returns: {"ok":1, "agent":"agent-001", "ws":"/path", "team":"my-project", "available_teams":["default","my-project"]}
-
-# Now agent is in team "my-project"
-discover()  # See other agents in this team
-broadcast(subj="Hello", body="I joined!")  # Send to all team members
-```
-
-### Multi-Agent Team Example
-
-```python
-# Leader agent creates tasks with role assignments
-init(team="ecommerce", leader=true)
-add(title="Auth API", tags=["be"], pri=1)
-add(title="Login form", tags=["fe"], pri=1)
-add(title="Login screen", tags=["mobile"], pri=2)
-
-# Agent 1 (Backend, workspace /api)
-init(team="ecommerce", role="be")
-claim()  # Gets "Auth API" task
-# → joins team "ecommerce", claims BE task
-
-# Agent 2 (Frontend, workspace /web)  
-init(team="ecommerce", role="fe")
-claim()  # Gets "Login form" task
-# → joins existing team "ecommerce", claims FE task
-
-# Agent 3 (Mobile, workspace /mobile)
-init(team="ecommerce", role="mobile")
-claim()  # Gets "Login screen" task
-# → joins existing team "ecommerce", claims mobile task
-
-# All 3 agents can now:
-discover()   # See each other
-broadcast()  # Send to all
-inbox()      # Receive team messages
-```
-
-### Team Data Storage
-
-```
-~/.beads-village/
-├── ecommerce/          # Team A's shared data
-│   ├── mail/           # Team A broadcasts only
-│   └── agents/         # Team A agent registry
-├── internal-tools/     # Team B (completely isolated)
-│   ├── mail/           
-│   └── agents/         
-└── default/            # Default team (unassigned agents)
-    ├── mail/
-    └── agents/
-```
-
-### Switching Teams
-
-Agent can switch between teams in the same session:
-
-```python
-# Working in team alpha, need to check team beta
-init(team="beta")
-inbox()  # See beta messages
-discover()  # See beta agents
-
-# Switch back to alpha
-init(team="alpha")
-broadcast(subj="Done", body="Finished checking beta")
-```
-
-### Key Points
-
-| Aspect | Behavior |
-|--------|----------|
-| **Default team** | `default` - all agents without team specified |
-| **Team isolation** | Agents only see teammates' broadcasts and registry |
-| **Local messaging** | `.mail/` in workspace - only this workspace |
-| **Team messaging** | `broadcast()` or `msg(global=true)` - all team workspaces |
-| **Switching teams** | Use `init(team="...")` - no restart needed! |
-| **Available teams** | Check `init()` response → `available_teams` field |
-
-See [AGENTS.md](AGENTS.md#-team-setup) for detailed team patterns and examples.
-
-## Daemon Support (Optional)
-
-For ~10x faster operations, start the bd daemon:
-
-```bash
-bd daemon --start
-```
-
-Falls back to CLI automatically if daemon is not running.
-
-| Platform | Support |
-|----------|---------|
-| Linux/macOS | ✅ Unix socket |
-| Windows | ⚠️ Experimental (requires pywin32) |
+---
 
 ## Troubleshooting
 
-### Common Issues
-
 | Issue | Solution |
 |-------|----------|
-| `bd: command not found` | Install Beads CLI: `pip install beads` |
-| MCP server not starting | Check Node.js 16+ is installed |
-| Tools not appearing | Restart your AI client after config changes |
-| Permission errors | Ensure write access to workspace directory |
-
-### Verify Installation
+| `bd: command not found` | `pip install beads` |
+| MCP server not starting | Check Node.js 16+ |
+| Tools not appearing | Restart IDE after config |
 
 ```bash
-# Check Beads CLI
+# Verify installation
 bd --version
-
-# Check Node.js
 node --version
-
-# Test MCP server
 npx beads-village --help
 ```
 
+---
+
 ## Links
 
-- [Beads CLI](https://github.com/steveyegge/beads)
-- [Best Practices](https://steve-yegge.medium.com/beads-best-practices-2db636b9760c)
-- [Quick Reference](AGENTS-LITE.md) - Token-optimized guide for LLMs
-- [Full Documentation](AGENTS.md) - Detailed workflows and patterns
+- [Beads CLI](https://github.com/steveyegge/beads) - Git-native issue tracker
+- [Beads Best Practices](https://steve-yegge.medium.com/beads-best-practices-2db636b9760c)
+- [MCP Agent Mail](https://github.com/Dicklesworthstone/mcp_agent_mail) - Inspiration for messaging concept
+- [Model Context Protocol](https://modelcontextprotocol.io/)
+
+---
 
 ## Changelog
 
-### v1.1.2 (Role-Based Task Assignment)
+<details>
+<summary><strong>v1.1.2</strong> - Role-Based Task Assignment</summary>
 
 - **Leader/Worker agents** - `init(leader=true)` for leaders, `init(role="fe")` for workers
 - **Role tags on tasks** - `add(tags=["fe"])` to assign tasks to specific roles
 - **Auto-filtered claim** - Workers only see tasks matching their role
 - **assign() tool** - Leaders can explicitly assign tasks to roles
-- **Updated docs** - README, AGENTS.md, AGENTS-LITE.md with role-based examples
+</details>
 
-### v1.1.1 (Token Optimization)
+<details>
+<summary><strong>v1.1.1</strong> - Token Optimization</summary>
 
-- **Tool descriptions reduced by ~50%** - Compact, LLM-friendly descriptions
-- **Instructions reduced by ~80%** - Essential workflow only in MCP initialize
-- **Added AGENTS-LITE.md** - 1.3KB quick reference (vs 16KB full docs)
-- All tests passing
+- **Tool descriptions reduced by ~50%**
+- **Instructions reduced by ~80%**
+- **Added AGENTS-LITE.md** - 1.3KB quick reference
+</details>
+
+---
 
 ## License
 
