@@ -52,7 +52,7 @@ release()
 | Initialize | `init` | `init()` |
 | Get task | `claim` | `claim()` → auto picks highest priority ready |
 | Complete | `done` | `done(id="bd-123", msg="implemented")` |
-| Create issue | `add` | `add(title="Fix bug", typ="bug", pri=1)` |
+| Create issue | `add` | `add(title="Fix bug", desc="Login fails with 500...", typ="bug", pri=1)` |
 
 ### Issue Queries
 
@@ -123,6 +123,22 @@ release()
 
 ---
 
+## Daemon Support (Optional)
+
+Beads Village works **without the daemon** - it uses `bd` CLI by default.
+
+For ~10x faster operations, optionally start the daemon:
+
+```
+bd daemon --start
+```
+
+When daemon is running, operations use RPC instead of CLI.
+
+**If daemon is not running:** Falls back to CLI automatically. No action needed.
+
+---
+
 ## Issue Types
 
 | Type | Use For |
@@ -131,7 +147,20 @@ release()
 | `bug` | Defect to fix |
 | `feature` | New functionality |
 | `epic` | Large work with sub-issues |
-| `chore` | Maintenance, cleanup |
+| `chore` | Maintenance, cleanup, dependencies |
+
+## Creating Issues with Descriptions
+
+**IMPORTANT**: Always include a description when creating issues!
+
+```
+add(title="Fix auth bug", desc="Login fails with 500 when password has special chars. Found during testing bd-42.", typ="bug", pri=1)
+```
+
+**With dependencies:**
+```
+add(title="Fix auth bug", desc="Details...", deps=["discovered-from:bd-42"])
+```
 
 ---
 

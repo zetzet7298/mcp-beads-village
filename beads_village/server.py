@@ -19,6 +19,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional, Set, List, Any
 
+# Daemon client for faster operations (optional)
+from .bd_daemon_client import BdDaemonClient, is_daemon_available, DaemonError, DaemonNotRunningError
+
 # ============================================================================
 # CONFIG
 # ============================================================================
@@ -28,6 +31,12 @@ AGENT = os.environ.get("BEADS_AGENT", f"agent-{os.getpid()}")
 # Current workspace - can be changed via init(ws=...)
 # Each workspace has its own .beads/, .mail/, .reservations/
 WS = os.environ.get("BEADS_WS", os.getcwd())
+
+# Prefer daemon over CLI for faster operations (set BEADS_USE_DAEMON=0 to disable)
+USE_DAEMON = os.environ.get("BEADS_USE_DAEMON", "1") == "1"
+
+# Daemon client instance (lazy initialized)
+_daemon_client: Optional[BdDaemonClient] = None
 
 # ============================================================================
 # STATE
@@ -54,9 +63,9 @@ def bd_sync(*args, timeout: float = 30.0) -> dict:
     """
     try:
         cmd = ["bd", *args]
-        # Add --json if command supports it
-        json_cmds = {"list", "ready", "show", "stats", "doctor", "cleanup"}
-        if args and args[0] in json_cmds:
+        # Add --json if command supports it and not already present
+        json_cmds = {"list", "ready", "show", "stats", "doctor", "cleanup", "create"}
+        if args and args[0] in json_cmds and "--json" not in args:
             cmd.append("--json")
         
         # Run bd in current workspace
@@ -86,9 +95,174 @@ def bd_sync(*args, timeout: float = 30.0) -> dict:
         return {"error": str(e)[:100]}
 
 
+def _get_daemon_client() -> Optional[BdDaemonClient]:
+    """Get or create daemon client for current workspace.
+    
+    Returns:
+        BdDaemonClient if daemon is available and enabled, None otherwise
+    """
+    global _daemon_client
+    
+    if not USE_DAEMON:
+        return None
+    
+    if not is_daemon_available(WS):
+        return None
+    
+    if _daemon_client is None or _daemon_client.working_dir != WS:
+        _daemon_client = BdDaemonClient(working_dir=WS, actor=AGENT)
+    
+    return _daemon_client
+
+
 async def bd(*args, timeout: float = 30.0) -> dict:
-    """Run bd CLI command (async wrapper)."""
+    """Run bd command - uses daemon if available, falls back to CLI.
+    
+    The daemon is ~10x faster than CLI for repeated operations.
+    """
+    # Try daemon first if enabled
+    daemon = _get_daemon_client()
+    if daemon:
+        try:
+            return await _bd_via_daemon(daemon, args)
+        except (DaemonError, DaemonNotRunningError):
+            # Fall back to CLI
+            pass
+    
+    # Fall back to CLI
     return bd_sync(*args, timeout=timeout)
+
+
+async def _bd_via_daemon(daemon: BdDaemonClient, args: tuple) -> dict:
+    """Execute bd command via daemon client.
+    
+    Maps CLI-style args to daemon RPC calls.
+    """
+    if not args:
+        return {"error": "no command specified"}
+    
+    cmd = args[0]
+    
+    if cmd == "init":
+        # Init doesn't go through daemon
+        raise DaemonNotRunningError("init must use CLI")
+    
+    elif cmd == "ready":
+        limit = 5
+        # Parse --limit from args
+        for i, arg in enumerate(args):
+            if arg == "--limit" and i + 1 < len(args):
+                try:
+                    limit = int(args[i + 1])
+                except ValueError:
+                    pass
+        
+        issues = await daemon.ready(limit=limit)
+        return issues if isinstance(issues, list) else [issues] if issues else []
+    
+    elif cmd == "list":
+        status = None
+        limit = 10
+        for i, arg in enumerate(args):
+            if arg == "--status" and i + 1 < len(args):
+                status = args[i + 1]
+            elif arg == "--limit" and i + 1 < len(args):
+                try:
+                    limit = int(args[i + 1])
+                except ValueError:
+                    pass
+        
+        issues = await daemon.list_issues(status=status, limit=limit)
+        return issues if isinstance(issues, list) else [issues] if issues else []
+    
+    elif cmd == "show" and len(args) > 1:
+        issue_id = args[1]
+        return await daemon.show(issue_id)
+    
+    elif cmd == "create":
+        # Parse create args
+        title = args[1] if len(args) > 1 else ""
+        issue_type = "task"
+        priority = 2
+        description = ""
+        deps = []
+        
+        i = 2
+        while i < len(args):
+            arg = args[i]
+            if arg in ("-t", "--type") and i + 1 < len(args):
+                issue_type = args[i + 1]
+                i += 2
+            elif arg in ("-p", "--priority") and i + 1 < len(args):
+                try:
+                    priority = int(args[i + 1])
+                except ValueError:
+                    pass
+                i += 2
+            elif arg in ("-d", "--description") and i + 1 < len(args):
+                description = args[i + 1]
+                i += 2
+            elif arg == "--deps" and i + 1 < len(args):
+                deps.append(args[i + 1])
+                i += 2
+            elif arg == "--json":
+                i += 1  # Skip
+            else:
+                i += 1
+        
+        return await daemon.create(
+            title=title,
+            issue_type=issue_type,
+            priority=priority,
+            description=description,
+            deps=deps if deps else None,
+        )
+    
+    elif cmd == "update" and len(args) > 1:
+        issue_id = args[1]
+        status = None
+        priority = None
+        
+        for i, arg in enumerate(args):
+            if arg == "--status" and i + 1 < len(args):
+                status = args[i + 1]
+            elif arg in ("-p", "--priority") and i + 1 < len(args):
+                try:
+                    priority = int(args[i + 1])
+                except ValueError:
+                    pass
+        
+        return await daemon.update(issue_id, status=status, priority=priority)
+    
+    elif cmd == "close" and len(args) > 1:
+        issue_id = args[1]
+        reason = "Completed"
+        for i, arg in enumerate(args):
+            if arg == "--reason" and i + 1 < len(args):
+                reason = args[i + 1]
+        
+        return await daemon.close(issue_id, reason=reason)
+    
+    elif cmd == "sync":
+        return await daemon.sync()
+    
+    elif cmd == "stats":
+        return await daemon.stats()
+    
+    elif cmd == "dep" and len(args) > 3 and args[1] == "add":
+        from_id = args[2]
+        to_id = args[3]
+        dep_type = "blocks"
+        for i, arg in enumerate(args):
+            if arg == "--type" and i + 1 < len(args):
+                dep_type = args[i + 1]
+        
+        await daemon.add_dependency(from_id, to_id, dep_type)
+        return {"ok": 1}
+    
+    else:
+        # Command not supported by daemon, fall back to CLI
+        raise DaemonNotRunningError(f"Command '{cmd}' not supported by daemon")
 
 
 def ensure_dir(base: str, name: str) -> str:
@@ -488,7 +662,13 @@ async def tool_done(args: dict) -> str:
 
 
 async def tool_add(args: dict) -> str:
-    """Create new issue (file issues for anything >2 min) with actionable errors."""
+    """Create new issue (file issues for anything >2 min) with actionable errors.
+    
+    IMPORTANT: Always provide a meaningful description with context about:
+    - Why this issue exists (problem statement or need)
+    - What needs to be done (scope and approach)
+    - How you discovered it (if applicable)
+    """
     title = args.get("title", "")
     if not title:
         return j({
@@ -497,10 +677,10 @@ async def tool_add(args: dict) -> str:
         })
 
     typ = args.get("typ", "task")
-    if typ not in ("task", "bug", "epic", "story"):
+    if typ not in ("task", "bug", "feature", "epic", "chore"):
         return j({
             "error": f"invalid type: {typ}",
-            "hint": "Valid types: 'task' (default), 'bug', 'epic', 'story'"
+            "hint": "Valid types: 'task' (default), 'bug', 'feature', 'epic', 'chore'"
         })
 
     pri = args.get("pri", 2)
@@ -510,10 +690,24 @@ async def tool_add(args: dict) -> str:
             "hint": "Priority must be 0-4. 0=critical, 1=high, 2=normal (default), 3=low, 4=backlog"
         })
 
+    description = args.get("desc", "")
+    deps = args.get("deps", [])
     parent = args.get("parent", S.issue)  # Default to current issue
 
+    # Build command arguments
+    cmd_args = ["create", title, "-t", typ, "-p", str(pri), "--json"]
+    
+    # Add description if provided
+    if description:
+        cmd_args.extend(["--description", description])
+    
+    # Add dependencies if provided (format: "discovered-from:bd-123" or just "bd-123")
+    if deps:
+        for dep in deps:
+            cmd_args.extend(["--deps", dep])
+    
     # Create issue
-    r = await bd("create", title, "-t", typ, "-p", str(pri))
+    r = await bd(*cmd_args)
 
     if isinstance(r, dict) and r.get("error"):
         return j({
@@ -530,8 +724,8 @@ async def tool_add(args: dict) -> str:
             "hint": "Check if workspace is initialized with 'status'"
         })
 
-    # Link to parent if specified
-    if parent and new_id:
+    # Link to parent if specified and no deps provided (for backward compatibility)
+    if parent and new_id and not deps:
         await bd("dep", "add", new_id, parent, "--type", "discovered-from")
 
     return j({
@@ -539,7 +733,9 @@ async def tool_add(args: dict) -> str:
         "t": title,
         "p": pri,
         "typ": typ,
-        "parent": parent,
+        "desc": description[:100] + "..." if len(description) > 100 else description,
+        "parent": parent if not deps else None,
+        "deps": deps,
         "hint": f"Issue created. Use 'show {new_id}' to see details."
     })
 
@@ -915,7 +1111,7 @@ TOOLS = {
     },
     "add": {
         "fn": tool_add,
-        "desc": "Create a new issue/task. Use this for any work that takes >2 minutes to avoid losing track. Issues are automatically linked to current task as 'discovered-from'. Supports task, bug, epic, and story types.",
+        "desc": "Create a new issue/task. Use this for any work that takes >2 minutes to avoid losing track. IMPORTANT: Always include a description explaining WHY this issue exists and WHAT needs to be done. Issues without descriptions lack context for future work.",
         "input": {
             "type": "object",
             "properties": {
@@ -923,17 +1119,26 @@ TOOLS = {
                     "type": "string",
                     "description": "Clear, actionable title. Example: 'Fix authentication timeout on slow networks'"
                 },
+                "desc": {
+                    "type": "string",
+                    "description": "Issue description explaining: WHY it exists, WHAT needs to be done, HOW you discovered it. Example: 'Login fails with 500 error when password has special characters. Found during auth testing.'"
+                },
                 "typ": {
                     "type": "string",
-                    "description": "Issue type: 'task' (default), 'bug', 'epic', or 'story'"
+                    "description": "Issue type: 'task' (default), 'bug', 'feature', 'epic', or 'chore'"
                 },
                 "pri": {
                     "type": "integer",
                     "description": "Priority 0-4. 0=critical (drop everything), 1=high, 2=normal (default), 3=low, 4=backlog"
                 },
+                "deps": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Dependencies in format 'type:id' or just 'id'. Types: blocks, related, parent-child, discovered-from. Example: ['discovered-from:bd-123', 'blocks:bd-456']"
+                },
                 "parent": {
                     "type": "string",
-                    "description": "Parent issue ID to link as dependency. Defaults to current task if in a session."
+                    "description": "Parent issue ID to link as 'discovered-from' dependency. Defaults to current task if in a session. Ignored if deps is provided."
                 }
             },
             "required": ["title"]
