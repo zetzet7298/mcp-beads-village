@@ -325,6 +325,22 @@ add(
     pri=1
 )
 
+# With role tags (for multi-agent coordination)
+add(
+    title="Implement login form",
+    desc="Create React login component using /auth/login API",
+    typ="feature",
+    tags=["fe"]  # Only FE agents will claim this task
+)
+
+# Backend task
+add(
+    title="Add /auth/login endpoint",
+    desc="POST endpoint, returns JWT token",
+    typ="feature",
+    tags=["be"]  # Only BE agents will claim this task
+)
+
 # With dependencies
 add(
     title="Add password validation",
@@ -333,6 +349,18 @@ add(
     deps=["discovered-from:bd-42", "blocks:bd-50"]
 )
 ```
+
+### Role Tags
+
+Use tags to assign tasks to specific agent roles. Agents with matching roles will automatically claim these tasks.
+
+| Tag | Role | Example Tasks |
+|-----|------|---------------|
+| `fe` | Frontend | UI components, forms, styling |
+| `be` | Backend | APIs, database, business logic |
+| `mobile` | Mobile | iOS/Android apps |
+| `devops` | DevOps | CI/CD, infrastructure, deployment |
+| `qa` | QA | Testing, test automation |
 
 ### Dependency Types
 
@@ -344,6 +372,44 @@ add(
 | `parent-child` | Sub-issue of epic | `deps=["parent-child:bd-10"]` |
 
 ## Multi-Agent Workflow
+
+### Leader-Based Task Assignment
+
+A **leader agent** can create and assign tasks to specific roles:
+
+```python
+# Leader agent initializes with leader=true
+init(team="my-project", leader=true)
+
+# Create tasks with role tags
+add(title="Add login form", tags=["fe"], pri=1)
+add(title="Create /auth/login API", tags=["be"], pri=1)
+add(title="Add login screen", tags=["mobile"], pri=2)
+
+# Or explicitly assign existing tasks
+assign(id="bd-1", role="fe")
+assign(id="bd-2", role="be")
+```
+
+### Role-Based Agents
+
+Worker agents join with their role to automatically receive relevant tasks:
+
+```python
+# FE agent in /web workspace
+init(team="my-project", role="fe")
+claim()  # Automatically gets tasks tagged with "fe"
+
+# BE agent in /api workspace
+init(team="my-project", role="be")
+claim()  # Automatically gets tasks tagged with "be"
+
+# Mobile agent in /mobile workspace
+init(team="my-project", role="mobile")
+claim()  # Automatically gets tasks tagged with "mobile"
+```
+
+### Cross-Workspace Communication
 
 Agents can **switch between workspaces** to read tasks from other teams:
 
@@ -415,7 +481,7 @@ init() → claim() → reserve() → [work] → done() → RESTART
 | Category | Tools | Description |
 |----------|-------|-------------|
 | **Workflow** | `init`, `claim`, `done` | Task lifecycle |
-| **Issues** | `add`, `ls`, `ready`, `show` | CRUD operations |
+| **Issues** | `add`, `assign`, `ls`, `ready`, `show` | CRUD operations |
 | **File Locking** | `reserve`, `release`, `reservations` | Conflict prevention |
 | **Messaging** | `msg`, `inbox`, `broadcast` | Agent coordination |
 | **Discovery** | `discover`, `status` | Find agents/workspaces |
@@ -451,17 +517,26 @@ broadcast(subj="Hello", body="I joined!")  # Send to all team members
 ### Multi-Agent Team Example
 
 ```python
+# Leader agent creates tasks with role assignments
+init(team="ecommerce", leader=true)
+add(title="Auth API", tags=["be"], pri=1)
+add(title="Login form", tags=["fe"], pri=1)
+add(title="Login screen", tags=["mobile"], pri=2)
+
 # Agent 1 (Backend, workspace /api)
-init(team="ecommerce")
-# → joins team "ecommerce", team is created automatically
+init(team="ecommerce", role="be")
+claim()  # Gets "Auth API" task
+# → joins team "ecommerce", claims BE task
 
 # Agent 2 (Frontend, workspace /web)  
-init(team="ecommerce")
-# → joins existing team "ecommerce"
+init(team="ecommerce", role="fe")
+claim()  # Gets "Login form" task
+# → joins existing team "ecommerce", claims FE task
 
 # Agent 3 (Mobile, workspace /mobile)
-init(team="ecommerce")
-# → joins existing team "ecommerce"
+init(team="ecommerce", role="mobile")
+claim()  # Gets "Login screen" task
+# → joins existing team "ecommerce", claims mobile task
 
 # All 3 agents can now:
 discover()   # See each other
@@ -559,6 +634,14 @@ npx beads-village --help
 - [Full Documentation](AGENTS.md) - Detailed workflows and patterns
 
 ## Changelog
+
+### v1.1.2 (Role-Based Task Assignment)
+
+- **Leader/Worker agents** - `init(leader=true)` for leaders, `init(role="fe")` for workers
+- **Role tags on tasks** - `add(tags=["fe"])` to assign tasks to specific roles
+- **Auto-filtered claim** - Workers only see tasks matching their role
+- **assign() tool** - Leaders can explicitly assign tasks to roles
+- **Updated docs** - README, AGENTS.md, AGENTS-LITE.md with role-based examples
 
 ### v1.1.1 (Token Optimization)
 

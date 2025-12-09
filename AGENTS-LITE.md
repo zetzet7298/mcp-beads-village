@@ -1,18 +1,26 @@
 # Beads Village MCP - Quick Reference
 
 ## Workflow
+
+### Leader Agent
 ```
-init() → claim() → reserve(paths) → work → done(id,msg) → restart
+init(team, leader=true) → add(tags=["role"]) → assign(id,role) → monitor
+```
+
+### Worker Agent
+```
+init(team, role="fe/be/mobile") → claim() → reserve(paths) → work → done(id,msg) → restart
 ```
 
 ## Core Tools
 
 | Tool | Use | Key Args |
 |------|-----|----------|
-| `init` | Join workspace (FIRST) | `ws`, `team` |
-| `claim` | Get next task | - |
+| `init` | Join workspace (FIRST) | `ws`, `team`, `role`, `leader` |
+| `claim` | Get next task (filtered by role) | - |
 | `done` | Complete task | `id`, `msg` |
-| `add` | Create issue | `title`, `desc`, `typ`, `pri` |
+| `add` | Create issue | `title`, `desc`, `typ`, `pri`, `tags` |
+| `assign` | Assign to role (leader only) | `id`, `role` |
 
 ## Query Tools
 
@@ -50,7 +58,7 @@ init() → claim() → reserve(paths) → work → done(id,msg) → restart
 
 ## Response Fields
 
-`id`=ID, `t`=title, `p`=priority(0-4), `s`=status, `f`=from, `b`=body
+`id`=ID, `t`=title, `p`=priority(0-4), `s`=status, `f`=from, `b`=body, `tags`=role tags
 
 ## Priority
 
@@ -60,9 +68,32 @@ init() → claim() → reserve(paths) → work → done(id,msg) → restart
 
 task, bug, feature, epic, chore
 
+## Role Tags
+
+`fe`=frontend, `be`=backend, `mobile`, `devops`, `qa`
+
 ## Rules
 
 1. Always `init()` first
-2. Always `reserve()` before editing files
-3. Create issues for work >2min
-4. Restart session after `done()`
+2. Leader: `init(leader=true)` to assign tasks
+3. Worker: `init(role="fe/be/...")` to auto-filter tasks
+4. Always `reserve()` before editing files
+5. Create issues for work >2min
+6. Restart session after `done()`
+
+## Example: Multi-Agent Setup
+
+```python
+# Leader creates tasks
+init(team="proj", leader=true)
+add(title="Login API", tags=["be"])
+add(title="Login form", tags=["fe"])
+
+# BE agent claims BE tasks
+init(team="proj", role="be")
+claim()  # Gets "Login API"
+
+# FE agent claims FE tasks
+init(team="proj", role="fe")
+claim()  # Gets "Login form"
+```

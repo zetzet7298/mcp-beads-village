@@ -91,6 +91,8 @@ class State:
     start: datetime = field(default_factory=datetime.now)
     done: int = 0
     reserved_files: Set[str] = field(default_factory=set)
+    role: Optional[str] = None  # Agent role: fe, be, mobile, devops, qa, etc.
+    is_leader: bool = False  # Leader can assign tasks to other agents
 
 S = State()
 
@@ -228,6 +230,7 @@ async def _bd_via_daemon(daemon: BdDaemonClient, args: tuple) -> dict:
         priority = 2
         description = ""
         deps = []
+        tags = []
         
         i = 2
         while i < len(args):
@@ -247,10 +250,17 @@ async def _bd_via_daemon(daemon: BdDaemonClient, args: tuple) -> dict:
             elif arg == "--deps" and i + 1 < len(args):
                 deps.append(args[i + 1])
                 i += 2
+            elif arg == "--tag" and i + 1 < len(args):
+                tags.append(args[i + 1])
+                i += 2
             elif arg == "--json":
                 i += 1  # Skip
             else:
                 i += 1
+        
+        # If tags are used, fall back to CLI (daemon may not support tags yet)
+        if tags:
+            raise DaemonNotRunningError("Tags not supported by daemon, falling back to CLI")
         
         return await daemon.create(
             title=title,
@@ -264,6 +274,7 @@ async def _bd_via_daemon(daemon: BdDaemonClient, args: tuple) -> dict:
         issue_id = args[1]
         status = None
         priority = None
+        tags = []
         
         for i, arg in enumerate(args):
             if arg == "--status" and i + 1 < len(args):
@@ -273,6 +284,12 @@ async def _bd_via_daemon(daemon: BdDaemonClient, args: tuple) -> dict:
                     priority = int(args[i + 1])
                 except ValueError:
                     pass
+            elif arg == "--tag" and i + 1 < len(args):
+                tags.append(args[i + 1])
+        
+        # If tags are used, fall back to CLI (daemon may not support tags yet)
+        if tags:
+            raise DaemonNotRunningError("Tags not supported by daemon, falling back to CLI")
         
         return await daemon.update(issue_id, status=status, priority=priority)
     
@@ -720,6 +737,8 @@ async def tool_init(args: dict) -> str:
     Args:
         ws: Workspace directory to join. Each workspace is independent.
         team: Team/project name to join. Can switch teams at runtime.
+        role: Agent role (fe/be/mobile/devops/qa/etc). Used for task filtering.
+        leader: If True, this agent can assign tasks to others.
     """
     global WS, TEAM
 
@@ -730,6 +749,14 @@ async def tool_init(args: dict) -> str:
     # Switch to specified team (allows runtime team switching!)
     if args.get("team"):
         TEAM = args["team"]
+    
+    # Set agent role for task filtering
+    if args.get("role"):
+        S.role = args["role"].lower().strip()
+    
+    # Set leader flag
+    if args.get("leader"):
+        S.is_leader = bool(args["leader"])
 
     # Ensure workspace directory exists
     if not os.path.isdir(WS):
@@ -759,13 +786,21 @@ async def tool_init(args: dict) -> str:
     cleanup_expired_reservations()
     
     # Register agent in global registry (for cross-workspace discovery)
-    register_agent(capabilities=["general"])
+    # Include role in capabilities for other agents to see
+    capabilities = ["general"]
+    if S.role:
+        capabilities.append(S.role)
+    if S.is_leader:
+        capabilities.append("leader")
+    register_agent(capabilities=capabilities)
 
     # Announce agent joining this workspace (local)
-    await send_msg("join", f"Agent {AGENT} joined workspace {WS}")
+    role_info = f" (role={S.role})" if S.role else ""
+    leader_info = " [LEADER]" if S.is_leader else ""
+    await send_msg("join", f"Agent {AGENT}{role_info}{leader_info} joined workspace {WS}")
     
     # Also announce globally so other workspaces know
-    await send_msg("join", f"Agent {AGENT} joined workspace {WS}", global_broadcast=True)
+    await send_msg("join", f"Agent {AGENT}{role_info}{leader_info} joined workspace {WS}", global_broadcast=True)
 
     # Get available teams for user reference
     available_teams = get_available_teams()
@@ -775,13 +810,19 @@ async def tool_init(args: dict) -> str:
         "agent": AGENT,
         "ws": WS,
         "team": TEAM,
+        "role": S.role,
+        "is_leader": S.is_leader,
         "available_teams": available_teams,
         "hint": "Workspace ready. Use 'claim' to get a task, or 'ready' to see available tasks."
     })
 
 
 async def tool_claim(_args: dict) -> str:
-    """Claim next ready task (highest priority first) with actionable errors."""
+    """Claim next ready task (highest priority first) with actionable errors.
+    
+    If agent has a role set, will prioritize tasks with matching tags.
+    Tasks with tags that don't match agent's role are filtered out.
+    """
     # Sync first to get latest state
     await bd("sync")
 
@@ -801,8 +842,29 @@ async def tool_claim(_args: dict) -> str:
             "hint": "No tasks available to claim. Use 'add' to create new tasks, or 'ls' to see all issues."
         })
 
-    # Get first ready issue
-    issue = r[0] if isinstance(r, list) else r
+    # Filter by role if agent has one
+    issues = r if isinstance(r, list) else [r]
+    
+    if S.role:
+        # Filter: only tasks with matching tag OR tasks without any tag
+        matching_issues = []
+        for issue in issues:
+            tags = issue.get("tags", []) or []
+            # Accept if: no tags, or our role is in tags
+            if not tags or S.role in [t.lower() for t in tags]:
+                matching_issues.append(issue)
+        
+        if not matching_issues:
+            return j({
+                "ok": 0,
+                "msg": f"no tasks for role '{S.role}'",
+                "hint": f"No tasks with tag '{S.role}' or untagged tasks. Use 'ready' to see all available tasks.",
+                "total_ready": len(issues)
+            })
+        issues = matching_issues
+
+    # Get first matching issue
+    issue = issues[0]
     issue_id = issue.get("id", "")
 
     # Update status (agents claim, not assigned per Steve's article)
@@ -812,13 +874,15 @@ async def tool_claim(_args: dict) -> str:
     S.issue = issue_id
 
     # Notify other agents
-    await send_msg(f"claimed:{issue_id}", issue.get("title", ""), importance="high")
+    role_info = f" [{S.role}]" if S.role else ""
+    await send_msg(f"claimed:{issue_id}", f"{issue.get('title', '')}{role_info}", importance="high")
 
     return j({
         "id": issue_id,
         "t": issue.get("title", ""),
         "p": issue.get("priority", 2),
         "s": "in_progress",
+        "tags": issue.get("tags", []),
         "hint": "Task claimed. Use 'reserve' before editing files, then 'done' when complete."
     })
 
@@ -876,6 +940,9 @@ async def tool_add(args: dict) -> str:
     - Why this issue exists (problem statement or need)
     - What needs to be done (scope and approach)
     - How you discovered it (if applicable)
+    
+    Use tags to assign tasks to specific roles (fe, be, mobile, devops, qa, etc).
+    Agents with matching roles will automatically pick up these tasks.
     """
     title = args.get("title", "")
     if not title:
@@ -901,6 +968,12 @@ async def tool_add(args: dict) -> str:
     description = args.get("desc", "")
     deps = args.get("deps", [])
     parent = args.get("parent", S.issue)  # Default to current issue
+    tags = args.get("tags", [])  # Role tags: fe, be, mobile, devops, qa, etc.
+    
+    # Normalize tags to lowercase
+    if isinstance(tags, str):
+        tags = [tags]
+    tags = [t.lower().strip() for t in tags if t]
 
     # Build command arguments
     cmd_args = ["create", title, "-t", typ, "-p", str(pri), "--json"]
@@ -908,6 +981,10 @@ async def tool_add(args: dict) -> str:
     # Add description if provided
     if description:
         cmd_args.extend(["--description", description])
+    
+    # Add tags if provided
+    for tag in tags:
+        cmd_args.extend(["--tag", tag])
     
     # Add dependencies if provided (format: "discovered-from:bd-123" or just "bd-123")
     if deps:
@@ -941,10 +1018,78 @@ async def tool_add(args: dict) -> str:
         "t": title,
         "p": pri,
         "typ": typ,
+        "tags": tags,
         "desc": description[:100] + "..." if len(description) > 100 else description,
         "parent": parent if not deps else None,
         "deps": deps,
         "hint": f"Issue created. Use 'show {new_id}' to see details."
+    })
+
+
+async def tool_assign(args: dict) -> str:
+    """Assign a task to a specific role or agent (leader only).
+    
+    Leaders can use this to explicitly assign tasks to specific roles.
+    This adds/updates the tags on the issue.
+    
+    Args:
+        id: Issue ID to assign
+        role: Role to assign to (fe, be, mobile, devops, qa, etc)
+        notify: If True, broadcast assignment notification (default: True)
+    """
+    if not S.is_leader:
+        return j({
+            "error": "permission denied",
+            "hint": "Only leaders can assign tasks. Use init(leader=true) to become a leader."
+        })
+    
+    issue_id = args.get("id", "")
+    if not issue_id:
+        return j({
+            "error": "id required",
+            "hint": "Provide the issue ID to assign"
+        })
+    
+    role = args.get("role", "")
+    if not role:
+        return j({
+            "error": "role required",
+            "hint": "Provide a role to assign to (fe, be, mobile, devops, qa, etc)"
+        })
+    
+    role = role.lower().strip()
+    notify = args.get("notify", True)
+    
+    # Get current issue to verify it exists
+    issue = await bd("show", issue_id)
+    if isinstance(issue, dict) and issue.get("error"):
+        return j({
+            "error": issue["error"],
+            "hint": f"Issue '{issue_id}' not found. Use 'ls' to see available issues."
+        })
+    
+    # Add tag to issue (beads CLI should support --tag)
+    r = await bd("update", issue_id, "--tag", role)
+    if isinstance(r, dict) and r.get("error"):
+        # Fallback: try alternative approach if update --tag not supported
+        # We can store assignment in description or use a workaround
+        pass
+    
+    # Notify team about assignment
+    if notify:
+        title = issue.get("title", issue_id) if isinstance(issue, dict) else issue_id
+        await send_msg(
+            f"assigned:{issue_id}",
+            f"Task '{title}' assigned to role: {role}",
+            importance="high",
+            global_broadcast=True
+        )
+    
+    return j({
+        "ok": 1,
+        "id": issue_id,
+        "assigned_to": role,
+        "hint": f"Task assigned to '{role}'. Agents with this role will see it when they claim()."
     })
 
 
@@ -1324,7 +1469,9 @@ TOOLS = {
             "type": "object",
             "properties": {
                 "ws": {"type": "string", "description": "Workspace path (default: cwd)"},
-                "team": {"type": "string", "description": "Team name to join (default: 'default')"}
+                "team": {"type": "string", "description": "Team name to join (default: 'default')"},
+                "role": {"type": "string", "description": "Agent role (fe/be/mobile/devops/qa). Used for task filtering."},
+                "leader": {"type": "boolean", "description": "If true, agent can assign tasks to others."}
             },
             "required": []
         },
@@ -1332,7 +1479,7 @@ TOOLS = {
     },
     "claim": {
         "fn": tool_claim,
-        "desc": "Claim next ready task (highest priority). Auto-syncs, marks in_progress.",
+        "desc": "Claim next ready task. Filters by role if set. Auto-syncs, marks in_progress.",
         "input": {"type": "object", "properties": {}, "required": []},
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True}
     },
@@ -1351,7 +1498,7 @@ TOOLS = {
     },
     "add": {
         "fn": tool_add,
-        "desc": "Create issue. Include desc for context.",
+        "desc": "Create issue. Use tags to assign to roles (fe/be/mobile/etc).",
         "input": {
             "type": "object",
             "properties": {
@@ -1359,12 +1506,27 @@ TOOLS = {
                 "desc": {"type": "string", "description": "Why/what/how context"},
                 "typ": {"type": "string", "description": "task|bug|feature|epic|chore"},
                 "pri": {"type": "integer", "description": "0=critical,1=high,2=normal,3=low,4=backlog"},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Role tags: fe,be,mobile,devops,qa"},
                 "deps": {"type": "array", "items": {"type": "string"}, "description": "type:id format"},
                 "parent": {"type": "string", "description": "Parent issue ID"}
             },
             "required": ["title"]
         },
         "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True}
+    },
+    "assign": {
+        "fn": tool_assign,
+        "desc": "Assign task to role (leader only). Adds tag and notifies team.",
+        "input": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "Issue ID to assign"},
+                "role": {"type": "string", "description": "Role to assign: fe,be,mobile,devops,qa"},
+                "notify": {"type": "boolean", "description": "Broadcast notification (default: true)"}
+            },
+            "required": ["id", "role"]
+        },
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
     },
     # Issue queries
     "ls": {

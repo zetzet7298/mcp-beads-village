@@ -8,6 +8,7 @@ This guide helps AI agents use Beads Village MCP correctly for task management a
 
 ## ⚡ Quick Start (MUST DO FIRST)
 
+### Standard Agent
 ```
 1. init()              → Join workspace, get agent ID
 2. claim()             → Get next ready task
@@ -15,6 +16,21 @@ This guide helps AI agents use Beads Village MCP correctly for task management a
 4. [do work]           → Make changes
 5. done(id="...", msg="...") → Complete task
 6. RESTART SESSION     → One task = one session (best practice)
+```
+
+### With Role-Based Assignment
+```
+# Leader agent (creates and assigns tasks)
+1. init(leader=true)            → Join as leader
+2. add(title="...", tags=["fe"]) → Create task with role tag
+3. assign(id="bd-42", role="fe") → Assign to role (optional)
+
+# Worker agent (claims tasks by role)
+1. init(role="fe")              → Join with role (fe/be/mobile/devops/qa)
+2. claim()                      → Auto-filtered to your role
+3. reserve(paths=[...])         → Lock files
+4. [do work]                    → Make changes
+5. done(id="...", msg="...")    → Complete task
 ```
 
 **CRITICAL**: Always call `init()` BEFORE any other Beads tool!
@@ -27,16 +43,29 @@ This guide helps AI agents use Beads Village MCP correctly for task management a
 ```
 Q: Am I starting work?
 ├─ Yes → init() first, ALWAYS
+│   ├─ Am I the leader/coordinator? → init(leader=true)
+│   ├─ Do I have a specialty? → init(role="fe/be/mobile/devops/qa")
+│   └─ General agent → init()
 └─ Already called init() → proceed to claim() or ready()
 ```
 
 ### Getting Work
 ```
 Q: What task should I work on?
+├─ Worker with role → claim() (auto-filters by your role)
 ├─ Want next priority task → claim()
 ├─ Want to see options first → ready(limit=5)
 ├─ Looking for specific task → ls(status="open") or show(id="...")
 └─ No tasks available → add(title="...", desc="...")
+```
+
+### Creating/Assigning Tasks (Leader)
+```
+Q: How do I create tasks for the team?
+├─ Create for specific role → add(title="...", tags=["fe"]) 
+├─ Create and assign → add(...) then assign(id="bd-42", role="be")
+├─ Create unassigned → add(title="...", desc="...")
+└─ Reassign existing → assign(id="bd-42", role="mobile")
 ```
 
 ### Before Editing Files
@@ -167,7 +196,80 @@ done(id="bd-42", msg="Implemented login with JWT tokens")
 # 6. RESTART SESSION for next task
 ```
 
-### Pattern 2: Finding Side Issues During Work
+### Pattern 2: Leader-Worker Role-Based Assignment
+```python
+# === LEADER AGENT (orchestrator/coordinator) ===
+init(team="ecommerce", leader=true)
+# Returns: {"ok":1, "agent":"agent-001", "ws":"...", "team":"ecommerce", "leader":true}
+
+# Create tasks with role tags
+add(
+    title="Implement /auth/login endpoint",
+    desc="JWT-based auth. Return token in 'token' field.",
+    typ="feature",
+    pri=1,
+    tags=["be"]  # Tagged for backend
+)
+# Returns: {"id":"bd-10", "t":"Implement /auth/login endpoint", "tags":["be"]}
+
+add(
+    title="Create login form component",
+    desc="Use POST /auth/login. Display errors.",
+    typ="feature",
+    pri=1,
+    tags=["fe"]  # Tagged for frontend
+)
+# Returns: {"id":"bd-11", "t":"Create login form component", "tags":["fe"]}
+
+add(
+    title="E2E tests for login flow",
+    desc="Test happy path and error cases.",
+    typ="task",
+    pri=2,
+    tags=["qa"]  # Tagged for QA
+)
+# Returns: {"id":"bd-12", "t":"E2E tests for login flow", "tags":["qa"]}
+
+# Optionally explicitly assign (if not using tags)
+assign(id="bd-15", role="mobile")
+# Returns: {"ok":1, "id":"bd-15", "role":"mobile"}
+
+
+# === BE WORKER AGENT ===
+init(team="ecommerce", role="be")
+# Returns: {"ok":1, "agent":"agent-be", "ws":"/api", "team":"ecommerce", "role":"be"}
+
+claim()  # Auto-filtered to tasks tagged "be"
+# Returns: {"id":"bd-10", "t":"Implement /auth/login endpoint", "p":1, "s":"in_progress"}
+
+reserve(paths=["src/auth/login.py"], reason="bd-10")
+[implement endpoint]
+done(id="bd-10", msg="Login API ready with JWT auth")
+broadcast(subj="Auth API Ready", body="POST /auth/login - returns JWT in 'token' field")
+
+
+# === FE WORKER AGENT ===
+init(team="ecommerce", role="fe")
+# Returns: {"ok":1, "agent":"agent-fe", "ws":"/web", "team":"ecommerce", "role":"fe"}
+
+claim()  # Auto-filtered to tasks tagged "fe"
+# Returns: {"id":"bd-11", "t":"Create login form component", "p":1, "s":"in_progress"}
+
+inbox()  # Check for updates from BE
+# [{"f":"agent-be", "s":"Auth API Ready", "b":"POST /auth/login - returns JWT", "global":true}]
+
+reserve(paths=["src/components/Login.tsx"], reason="bd-11")
+[implement form]
+done(id="bd-11", msg="Login form complete, uses /auth/login API")
+
+
+# === QA WORKER AGENT ===
+init(team="ecommerce", role="qa")
+claim()  # Only sees tasks tagged "qa"
+# Returns: {"id":"bd-12", "t":"E2E tests for login flow", ...}
+```
+
+### Pattern 3: Finding Side Issues During Work
 ```python
 # While working on bd-42, discover a bug
 add(
@@ -175,15 +277,16 @@ add(
     desc="Found during login implementation (bd-42). No validation for min length.",
     typ="bug",
     pri=2,
-    parent="bd-42"  # Link to parent task
+    tags=["be"],     # Assign to backend
+    parent="bd-42"   # Link to parent task
 )
-# Returns: {"id":"bd-43", "t":"Password validation missing"}
+# Returns: {"id":"bd-43", "t":"Password validation missing", "tags":["be"]}
 
 # Continue with original task
 done(id="bd-42", msg="Login done. Filed bd-43 for password validation.")
 ```
 
-### Pattern 3: Cross-Workspace Coordination (BE/FE)
+### Pattern 4: Cross-Workspace Coordination (BE/FE)
 ```python
 # === BE Agent in /api workspace ===
 init()
@@ -209,7 +312,7 @@ init(ws="/web")
 add(title="Login form", desc="Uses /auth/login from BE", typ="feature")
 ```
 
-### Pattern 4: Handling Conflicts
+### Pattern 5: Handling Conflicts
 ```python
 # Check before reserving
 reservations()
@@ -224,7 +327,7 @@ msg(subj="Need src/api.py", body="Working on bd-50, need to modify api.py", to="
 claim()  # Get different task
 ```
 
-### Pattern 5: Handling Blocked Tasks
+### Pattern 6: Handling Blocked Tasks
 ```python
 claim()  # Gets a task
 # Discover it's blocked by something
@@ -252,16 +355,17 @@ claim()
 ### Lifecycle Tools
 | Tool | When to Use | Key Args | Returns |
 |------|-------------|----------|---------|
-| `init` | Start of EVERY session | `ws="/path"` (optional) | `{ok, agent, ws, team}` |
-| `claim` | Get next task to work on | - | `{id, t, p, s}` or `{ok:0, msg}` |
+| `init` | Start of EVERY session | `ws`, `team`, `role`, `leader` | `{ok, agent, ws, team, role}` |
+| `claim` | Get next task to work on | - (auto-filters by role if set) | `{id, t, p, s}` or `{ok:0, msg}` |
 | `done` | Task complete | `id`, `msg` | `{ok, done, hint}` |
 
 ### Issue Management
 | Tool | When to Use | Key Args | Returns |
 |------|-------------|----------|---------|
-| `add` | Create new issue | `title`, `desc`, `typ`, `pri` | `{id, t, p, typ}` |
-| `ls` | List issues | `status`, `limit` | `[{id, t, p, s}...]` |
-| `ready` | See claimable tasks | `limit` | `[{id, t, p}...]` |
+| `add` | Create new issue | `title`, `desc`, `typ`, `pri`, `tags` | `{id, t, p, typ, tags}` |
+| `assign` | Assign task to role (leader only) | `id`, `role` | `{ok, id, role}` |
+| `ls` | List issues | `status`, `limit` | `[{id, t, p, s, tags}...]` |
+| `ready` | See claimable tasks | `limit` | `[{id, t, p, tags}...]` |
 | `show` | Get issue details | `id` | Full issue object |
 
 ### File Locking
@@ -313,6 +417,89 @@ claim()
 | **2** | Medium | Normal priority (DEFAULT) |
 | **3** | Low | Nice to have |
 | **4** | Backlog | Future consideration |
+
+---
+
+## 👥 Role-Based Task Assignment
+
+Role-based assignment enables efficient task distribution in multi-agent teams. Leaders create and assign tasks, workers automatically receive tasks matching their specialty.
+
+### Roles
+
+| Role | Description | Typical Files |
+|------|-------------|---------------|
+| `fe` | Frontend | `*.tsx`, `*.vue`, `*.css`, `src/components/` |
+| `be` | Backend | `*.py`, `*.go`, `*.java`, `src/api/`, `src/services/` |
+| `mobile` | Mobile apps | `*.swift`, `*.kt`, `android/`, `ios/` |
+| `devops` | Infrastructure | `Dockerfile`, `*.yaml`, `terraform/`, `.github/` |
+| `qa` | Testing/QA | `*.test.*`, `*.spec.*`, `e2e/`, `tests/` |
+
+### Leader Agents
+
+Leaders orchestrate work by creating and assigning tasks:
+
+```python
+# Initialize as leader
+init(team="my-project", leader=true)
+# Returns: {"ok":1, "agent":"agent-001", "leader":true, ...}
+
+# Create tasks with role tags
+add(title="Build user API", desc="CRUD for /users", tags=["be"])
+add(title="User profile page", desc="Display user info", tags=["fe"])
+add(title="Setup CI pipeline", desc="GitHub Actions", tags=["devops"])
+
+# Explicitly assign/reassign tasks
+assign(id="bd-42", role="mobile")
+# Returns: {"ok":1, "id":"bd-42", "role":"mobile"}
+```
+
+### Worker Agents
+
+Workers automatically receive tasks matching their role:
+
+```python
+# Initialize with role
+init(team="my-project", role="fe")
+# Returns: {"ok":1, "agent":"agent-fe", "role":"fe", ...}
+
+# claim() automatically filters by role
+claim()  # Only returns tasks tagged "fe"
+# Returns: {"id":"bd-11", "t":"User profile page", "tags":["fe"], ...}
+
+# ready() also respects role
+ready()  # Shows only "fe" tasks available
+```
+
+### Task Tags
+
+Tags connect tasks to roles:
+
+```python
+# Single role
+add(title="API endpoint", tags=["be"])
+
+# Multiple roles (any can claim)
+add(title="API contract review", tags=["be", "fe"])
+
+# No tags = anyone can claim
+add(title="Update README", desc="General task")
+```
+
+### How Filtering Works
+
+1. **Leader creates task** with `tags=["fe"]`
+2. **Worker with `role="fe"`** calls `claim()`
+3. **System filters** to only show tasks where:
+   - Task has no tags (unassigned), OR
+   - Task tags include the worker's role
+4. **Worker receives** matching task
+
+### Best Practices
+
+- **Leaders**: Always add `tags` when creating role-specific tasks
+- **Workers**: Initialize with your specialty role for automatic filtering
+- **Mixed work**: Workers can still see untagged tasks (general work)
+- **Reassignment**: Use `assign()` to move tasks between roles
 
 ---
 
@@ -476,6 +663,22 @@ init(team="app-team-a")     # Agent in /app-a (isolated from core)
 init(team="app-team-b")     # Agent in /app-b (isolated from core)
 ```
 
+#### Pattern 4: Role-Based Team with Leader
+```python
+# Leader sets up the team and creates tasks
+init(team="ecommerce", leader=true)
+add(title="Payment API", tags=["be"])
+add(title="Checkout UI", tags=["fe"])
+add(title="Payment flow tests", tags=["qa"])
+
+# Workers join with their roles
+init(team="ecommerce", role="be")   # BE agent
+init(team="ecommerce", role="fe")   # FE agent
+init(team="ecommerce", role="qa")   # QA agent
+
+# Each worker's claim() only returns matching tasks
+```
+
 ---
 
 ## 🔧 Error Handling
@@ -510,13 +713,13 @@ inbox(unread=True)
 ## ✅ Best Practices Checklist
 
 ### Before Starting
-- [ ] Call `init()` first
+- [ ] Call `init()` first (with `role` or `leader` as appropriate)
 - [ ] Check `inbox()` for updates from other agents
-- [ ] Run `ready()` to see available tasks
+- [ ] Run `ready()` to see available tasks (filtered by your role if set)
 
 ### During Work
 - [ ] Always `reserve()` before editing files
-- [ ] Create issues for side-discoveries with `add(..., desc="...")`
+- [ ] Create issues for side-discoveries with `add(..., desc="...", tags=[...])`
 - [ ] Keep reservations short (TTL 600s = 10 min default)
 - [ ] Check `reservations()` before editing new files
 
@@ -545,6 +748,9 @@ inbox(unread=True)
 | `ts` | Timestamp | `"2024-01-15T10:30:00"` |
 | `ws` | Workspace | `"/projects/api"` |
 | `team` | Team name | `"my-project"` |
+| `role` | Agent role | `"fe"` |
+| `leader` | Is leader agent | `true` |
+| `tags` | Role tags on issue | `["be", "fe"]` |
 | `global` | From team hub | `true` |
 | `imp` | Importance | `"high"` |
 
@@ -552,6 +758,7 @@ inbox(unread=True)
 
 ## 🚀 Example Complete Session
 
+### Standard Session
 ```python
 # === Starting a new work session ===
 Agent: I'll initialize beads village and see what work is available.
@@ -582,9 +789,10 @@ add(
     desc="Need client-side validation for email format and password length. Found during bd-50.",
     typ="task",
     pri=2,
+    tags=["fe"],    # Tag for frontend
     parent="bd-50"
 )
-# {"id":"bd-51", "t":"Add form validation to login", "p":2}
+# {"id":"bd-51", "t":"Add form validation to login", "p":2, "tags":["fe"]}
 
 Agent: Login form complete. Marking done and announcing to team.
 
@@ -595,4 +803,83 @@ broadcast(subj="Login Form Ready", body="FE login at /login - uses POST /auth/lo
 # {"sent":1, "global":true}
 
 Agent: Task complete. Restarting session as recommended.
+```
+
+### Role-Based Session (FE Worker)
+```python
+# === FE Agent starting work ===
+Agent: I'm a frontend developer. Let me join the team with my role.
+
+init(team="ecommerce", role="fe")
+# {"ok":1, "agent":"agent-fe", "ws":"C:\\web", "team":"ecommerce", "role":"fe"}
+
+inbox(unread=True)
+# [{"f":"agent-be", "s":"User API Ready", "b":"GET/POST /users available", "global":true}]
+
+Agent: Backend API is ready. Let me see what FE tasks are available.
+
+ready()
+# [{"id":"bd-20", "t":"User profile page", "p":1, "tags":["fe"]},
+#  {"id":"bd-21", "t":"User settings form", "p":2, "tags":["fe"]}]
+
+Agent: I'll claim the highest priority FE task.
+
+claim()
+# {"id":"bd-20", "t":"User profile page", "p":1, "s":"in_progress", "tags":["fe"]}
+
+reserve(paths=["src/pages/Profile.tsx"], reason="bd-20")
+[implements profile page]
+
+done(id="bd-20", msg="Profile page complete with user API integration")
+# {"ok":1, "done":1, "hint":"restart session"}
+```
+
+### Leader Session (Task Orchestration)
+```python
+# === Leader setting up sprint work ===
+Agent: I'm the team lead. Let me create and assign tasks for the sprint.
+
+init(team="ecommerce", leader=true)
+# {"ok":1, "agent":"agent-lead", "ws":"C:\\project", "team":"ecommerce", "leader":true}
+
+Agent: Creating tasks for the checkout feature.
+
+add(
+    title="Checkout API endpoint",
+    desc="POST /checkout - process payment and create order",
+    typ="feature",
+    pri=1,
+    tags=["be"]
+)
+# {"id":"bd-30", "t":"Checkout API endpoint", "tags":["be"]}
+
+add(
+    title="Checkout page UI",
+    desc="Cart summary, payment form, order confirmation",
+    typ="feature",
+    pri=1,
+    tags=["fe"]
+)
+# {"id":"bd-31", "t":"Checkout page UI", "tags":["fe"]}
+
+add(
+    title="Checkout E2E tests",
+    desc="Full checkout flow testing",
+    typ="task",
+    pri=2,
+    tags=["qa"]
+)
+# {"id":"bd-32", "t":"Checkout E2E tests", "tags":["qa"]}
+
+Agent: Tasks created. Workers will automatically receive tasks matching their roles.
+
+discover()
+# {"team":"ecommerce", "agents":[
+#   {"agent":"agent-be", "ws":"/api", "role":"be"},
+#   {"agent":"agent-fe", "ws":"/web", "role":"fe"},
+#   {"agent":"agent-qa", "ws":"/tests", "role":"qa"}
+# ]}
+
+broadcast(subj="Sprint Started", body="Checkout feature tasks created. Claim your work!")
+# {"sent":1, "global":true}
 ```
