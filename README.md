@@ -1,5 +1,8 @@
 # Beads Village
 
+[![npm version](https://img.shields.io/npm/v/beads-village.svg)](https://www.npmjs.com/package/beads-village)
+[![npm downloads](https://img.shields.io/npm/dm/beads-village.svg)](https://www.npmjs.com/package/beads-village)
+
 Multi-agent MCP server for **task coordination** and **file locking** between AI agents.
 
 Combines [Beads](https://github.com/steveyegge/beads) (issue tracking) + built-in Agent Mail (messaging) to enable multiple agents to work on the same codebase without conflicts.
