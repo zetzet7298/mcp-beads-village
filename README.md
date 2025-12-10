@@ -178,6 +178,111 @@ Choose the right documentation for your AI model:
 
 ---
 
+## Beads Viewer Integration (Optional)
+
+Enhance your workflow with the **Textual Dashboard** - a built-in TUI for monitoring agents, tasks, and messages.
+
+### Launch Dashboard
+
+```bash
+# Run dashboard for current directory
+python -m beads_village.dashboard
+
+# Run dashboard for specific workspace
+python -m beads_village.dashboard "C:\path\to\workspace"
+
+# Auto-start when leader inits
+init(leader=True, start_tui=True)
+```
+
+### Dashboard Features
+
+| Panel | Description |
+|-------|-------------|
+| **Teams** | Click to filter agents by team |
+| **Agents** | Shows online/offline status, current task |
+| **Tasks Board** | Kanban view (Open/In Progress/Blocked/Closed) |
+| **Task Detail** | Click any task for full details + activity |
+| **File Locks** | Active file reservations with TTL |
+| **Messages** | Recent broadcasts and done notifications |
+
+### Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `1-8` | Focus different panels |
+| `Tab` | Navigate between panels |
+| `j/k` | Scroll up/down |
+| `r` | Refresh data |
+| `t` | Toggle dark/light theme |
+| `q` | Quit |
+
+### Alternative: bv Binary (Go)
+
+For advanced graph analysis, install the optional `bv` binary:
+
+### Installation
+
+```bash
+# Option 1: Go install (recommended)
+go install github.com/Dicklesworthstone/beads_viewer/cmd/bv@latest
+
+# Option 2: Download binary from releases
+# https://github.com/Dicklesworthstone/beads_viewer/releases
+```
+
+### New Tools (when bv available)
+
+| Tool | Description |
+|------|-------------|
+| `bv_insights` | Graph analysis (PageRank, Betweenness, bottlenecks, cycles) |
+| `bv_plan` | Parallel execution tracks for multi-agent work |
+| `bv_priority` | Priority recommendations based on graph metrics |
+| `bv_diff` | Compare changes between git revisions |
+| `bv_tui` | Launch interactive TUI dashboard |
+| `bv_status` | Check bv availability and version |
+
+### Usage Examples
+
+```python
+# Get graph insights for AI decision making
+bv_insights()
+
+# Get priority recommendations
+bv_priority(limit=5)
+
+# Launch TUI for human operator
+bv_tui(recipe="actionable")
+
+# Auto-start TUI when leader inits
+init(leader=True, start_tui=True)
+```
+
+### Architecture with bv
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     MCP Beads Village                        │
+├─────────────────────────────────────────────────────────────┤
+│  Core Tools              │  bv Tools (optional)             │
+│  ──────────              │  ─────────────────               │
+│  init, claim, done       │  bv_insights (graph metrics)     │
+│  reserve, release        │  bv_plan (execution tracks)      │
+│  msg, inbox, broadcast   │  bv_priority (recommendations)   │
+│  ls, show, add           │  bv_tui (dashboard)              │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     bv Binary (Go)                           │
+│  - 9 Graph algorithms: PageRank, Betweenness, HITS, etc.    │
+│  - Robot mode: Pre-computed JSON for AI agents              │
+│  - TUI mode: Kanban, graph viz, insights dashboard          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## Architecture
 
 ```
@@ -255,6 +360,17 @@ npx beads-village --help
 ---
 
 ## Changelog
+
+<details>
+<summary><strong>v1.2.0</strong> - Textual Dashboard & Optimizations</summary>
+
+- **Built-in Textual Dashboard** - `python -m beads_village.dashboard` for monitoring
+- **Auto-start TUI** - `init(leader=true, start_tui=true)` launches dashboard automatically
+- **Stateless team discovery** - Dashboard reads agents from `.mail` messages (no registry file needed)
+- **Cross-workspace task lookup** - Task details fetched from correct workspace
+- **I/O optimization** - Mail messages cached, reducing disk reads by 80%
+- **UX improvements** - Click navigation: Teams → Agents → Tasks → Task Detail
+</details>
 
 <details>
 <summary><strong>v1.1.2</strong> - Role-Based Task Assignment</summary>

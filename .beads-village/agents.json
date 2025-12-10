@@ -1,0 +1,42 @@
+{
+  "test-agent-123": {
+    "agent_id": "test-agent-123",
+    "team": "bv-integration",
+    "role": "be",
+    "workspace": "c:/Working/mcp-beads-village",
+    "is_leader": true,
+    "current_task": "mcp-beads-village-a5k",
+    "last_seen": 1765288477.6679835,
+    "started_at": 1765288477.6679835
+  },
+  "leader-001": {
+    "agent_id": "leader-001",
+    "team": "bv-integration",
+    "role": "be",
+    "workspace": "c:/Working/mcp-beads-village",
+    "is_leader": true,
+    "current_task": "mcp-beads-village-a5k",
+    "last_seen": 1765288988.7960274,
+    "started_at": 1765288988.7960274
+  },
+  "worker-fe-002": {
+    "agent_id": "worker-fe-002",
+    "team": "bv-integration",
+    "role": "fe",
+    "workspace": "c:/Working/mcp-beads-village",
+    "is_leader": false,
+    "current_task": null,
+    "last_seen": 1765288988.8035347,
+    "started_at": 1765288988.8035347
+  },
+  "worker-qa-003": {
+    "agent_id": "worker-qa-003",
+    "team": "bv-integration",
+    "role": "qa",
+    "workspace": "c:/Working/mcp-beads-village",
+    "is_leader": false,
+    "current_task": "mcp-beads-village-test",
+    "last_seen": 1765288988.812853,
+    "started_at": 1765288988.812853
+  }
+}

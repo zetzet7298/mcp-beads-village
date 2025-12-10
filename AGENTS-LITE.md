@@ -4,7 +4,7 @@
 
 ### Leader Agent
 ```
-init(team, leader=true) → add(tags=["role"]) → assign(id,role) → monitor
+init(team, leader=true, start_tui=true) → add(tags=["role"]) → assign(id,role) → monitor
 ```
 
 ### Worker Agent
@@ -12,11 +12,18 @@ init(team, leader=true) → add(tags=["role"]) → assign(id,role) → monitor
 init(team, role="fe/be/mobile") → claim() → reserve(paths) → work → done(id,msg) → restart
 ```
 
+## Dashboard
+
+```bash
+python -m beads_village.dashboard [workspace]   # Manual launch
+init(leader=true, start_tui=true)              # Auto-launch for leader
+```
+
 ## Core Tools
 
 | Tool | Use | Key Args |
 |------|-----|----------|
-| `init` | Join workspace (FIRST) | `ws`, `team`, `role`, `leader` |
+| `init` | Join workspace (FIRST) | `ws`, `team`, `role`, `leader`, `start_tui` |
 | `claim` | Get next task (filtered by role) | - |
 | `done` | Complete task | `id`, `msg` |
 | `add` | Create issue | `title`, `desc`, `typ`, `pri`, `tags` |
@@ -55,6 +62,9 @@ init(team, role="fe/be/mobile") → claim() → reserve(paths) → work → done
 | `cleanup` | Remove old issues (days) |
 | `doctor` | Fix database |
 | `status` | Workspace overview |
+
+## Optional: bv Tools
+`bv_insights`, `bv_plan`, `bv_priority`, `bv_tui` - Graph analysis (requires bv binary)
 
 ## Response Fields
 

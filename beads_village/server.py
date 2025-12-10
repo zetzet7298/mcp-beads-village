@@ -22,11 +22,13 @@ from typing import Optional, Set, List, Any
 # Daemon client for faster operations (optional)
 try:
     from .bd_daemon_client import BdDaemonClient, is_daemon_available, DaemonError, DaemonNotRunningError
+    from .agent_registry import get_registry, AgentInfo
 except ImportError:
     # Running as standalone script (not as package)
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from bd_daemon_client import BdDaemonClient, is_daemon_available, DaemonError, DaemonNotRunningError
+    from agent_registry import get_registry, AgentInfo
 
 # ============================================================================
 # CONFIG
@@ -93,6 +95,8 @@ class State:
     reserved_files: Set[str] = field(default_factory=set)
     role: Optional[str] = None  # Agent role: fe, be, mobile, devops, qa, etc.
     is_leader: bool = False  # Leader can assign tasks to other agents
+    team: str = "default"  # Current team name
+    current_task: Optional[str] = None  # Current task ID for registry
 
 S = State()
 
@@ -739,6 +743,7 @@ async def tool_init(args: dict) -> str:
         team: Team/project name to join. Can switch teams at runtime.
         role: Agent role (fe/be/mobile/devops/qa/etc). Used for task filtering.
         leader: If True, this agent can assign tasks to others.
+        start_tui: If True and leader, auto-launch bv TUI dashboard for human monitoring.
     """
     global WS, TEAM
 
@@ -793,6 +798,19 @@ async def tool_init(args: dict) -> str:
     if S.is_leader:
         capabilities.append("leader")
     register_agent(capabilities=capabilities)
+    
+    # Register agent in new agent registry for tracking
+    S.team = TEAM  # Store team in state
+    registry = get_registry(WS)
+    agent_info = AgentInfo(
+        agent_id=AGENT,
+        team=S.team,
+        role=S.role,
+        workspace=WS,
+        is_leader=S.is_leader,
+        current_task=S.current_task
+    )
+    registry.register(agent_info)
 
     # Announce agent joining this workspace (local)
     role_info = f" (role={S.role})" if S.role else ""
@@ -805,6 +823,23 @@ async def tool_init(args: dict) -> str:
     # Get available teams for user reference
     available_teams = get_available_teams()
 
+    # Auto-start TUI if leader and start_tui is True
+    tui_started = False
+    if S.is_leader and args.get("start_tui"):
+        try:
+            import subprocess
+            import sys
+            # Start Textual dashboard in background process
+            subprocess.Popen(
+                [sys.executable, "-m", "beads_village.dashboard", WS],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0
+            )
+            tui_started = True
+        except Exception:
+            pass  # Silently ignore if dashboard can't start
+
     return j({
         "ok": 1,
         "agent": AGENT,
@@ -812,6 +847,7 @@ async def tool_init(args: dict) -> str:
         "team": TEAM,
         "role": S.role,
         "is_leader": S.is_leader,
+        "tui_started": tui_started,
         "available_teams": available_teams,
         "hint": "Workspace ready. Use 'claim' to get a task, or 'ready' to see available tasks."
     })
@@ -872,6 +908,11 @@ async def tool_claim(_args: dict) -> str:
 
     # Track in session state
     S.issue = issue_id
+    S.current_task = issue_id
+    
+    # Update agent registry with current task
+    registry = get_registry(WS)
+    registry.update_task(AGENT, issue_id)
 
     # Notify other agents
     role_info = f" [{S.role}]" if S.role else ""
@@ -924,7 +965,12 @@ async def tool_done(args: dict) -> str:
     await send_msg(f"done:{issue_id}", msg, importance="high")
 
     S.issue = None
+    S.current_task = None
     S.done += 1
+    
+    # Update agent registry - clear current task
+    registry = get_registry(WS)
+    registry.update_task(AGENT, None)
 
     return j({
         "ok": 1,
@@ -1471,7 +1517,8 @@ TOOLS = {
                 "ws": {"type": "string", "description": "Workspace path (default: cwd)"},
                 "team": {"type": "string", "description": "Team name to join (default: 'default')"},
                 "role": {"type": "string", "description": "Agent role (fe/be/mobile/devops/qa). Used for task filtering."},
-                "leader": {"type": "boolean", "description": "If true, agent can assign tasks to others."}
+                "leader": {"type": "boolean", "description": "If true, agent can assign tasks to others."},
+                "start_tui": {"type": "boolean", "description": "If true and leader, auto-launch bv TUI dashboard."}
             },
             "required": []
         },
@@ -1813,6 +1860,260 @@ def run_server():
 
 def main():
     run_server()
+
+
+# ============================================================================
+# Beads Viewer Integration Tools (optional - requires bv binary)
+# ============================================================================
+
+from beads_village.bv_manager import get_bv_manager, BvManager
+
+
+def _get_workspace() -> str:
+    """Get current workspace path"""
+    return WS
+
+
+def _get_bv() -> BvManager:
+    """Get BvManager for current workspace"""
+    return get_bv_manager(str(_get_workspace()))
+
+
+async def tool_bv_insights(_args: dict) -> str:
+    """Graph analysis: bottlenecks, keystones, cycles, PageRank, Betweenness.
+    
+    Returns pre-computed graph metrics for AI decision making.
+    Requires bv binary (install: go install github.com/Dicklesworthstone/beads_viewer/cmd/bv@latest)
+    """
+    bv = _get_bv()
+    if not bv.is_available:
+        return j({'error': 'bv not available', 'hint': 'Install bv for graph analysis'})
+    return j(bv.get_insights())
+
+
+async def tool_bv_plan(_args: dict) -> str:
+    """Parallel execution plan with tracks.
+    
+    Returns issue tracks that can be worked on in parallel.
+    Uses Union-Find algorithm to detect independent work streams.
+    """
+    bv = _get_bv()
+    if not bv.is_available:
+        return j({'error': 'bv not available', 'hint': 'Install bv for execution planning'})
+    return j(bv.get_plan())
+
+
+async def tool_bv_priority(args: dict) -> str:
+    """Priority recommendations based on graph analysis.
+    
+    Ranks issues by impact score combining:
+    - PageRank (30%): Recursive importance
+    - Betweenness (30%): Bottleneck detection  
+    - BlockerRatio (20%): How many issues unblocked
+    - Staleness (10%): Time since last update
+    - Priority (10%): Manual priority setting
+    
+    Args:
+        limit: Max issues to return (default 5)
+    """
+    limit = args.get("limit", 5)
+    bv = _get_bv()
+    if not bv.is_available:
+        return j({'error': 'bv not available', 'hint': 'Install bv for priority recommendations'})
+    return j(bv.get_priority(limit))
+
+
+async def tool_bv_diff(args: dict) -> str:
+    """Compare issue changes between git revisions.
+    
+    Args:
+        since: Start revision (commit SHA, tag, branch, or date like '3 days ago')
+        as_of: End revision (default: current state)
+    
+    Examples:
+        bv_diff(since='HEAD~5')  # Changes in last 5 commits
+        bv_diff(since='v1.0.0')  # Changes since tag
+        bv_diff(since='3 days ago')  # Changes in last 3 days
+    """
+    since = args.get("since")
+    as_of = args.get("as_of")
+    bv = _get_bv()
+    if not bv.is_available:
+        return j({'error': 'bv not available', 'hint': 'Install bv for diff analysis'})
+    return j(bv.get_diff(since, as_of))
+
+
+async def tool_bv_tui(args: dict) -> str:
+    """Launch Beads Viewer TUI dashboard in new terminal.
+    
+    Opens interactive TUI for human operators to view:
+    - Kanban board (Open/In Progress/Blocked/Closed)
+    - Dependency graph visualization
+    - Insights dashboard (bottlenecks, keystones, cycles)
+    - Actionable view (what to work on next)
+    
+    Args:
+        recipe: Filter preset (default, actionable, recent, blocked, high-impact, stale)
+    """
+    recipe = args.get("recipe")
+    bv = _get_bv()
+    if not bv.is_available:
+        return j({'error': 'bv not available', 'hint': 'Install bv for TUI dashboard'})
+    return j(bv.start_tui(recipe))
+
+
+async def tool_bv_status(_args: dict) -> str:
+    """Check bv availability and version.
+    
+    Returns bv binary status and version info.
+    """
+    bv = _get_bv()
+    if not bv.is_available:
+        return j({
+            'available': False,
+            'hint': 'Install bv: go install github.com/Dicklesworthstone/beads_viewer/cmd/bv@latest'
+        })
+    return j({
+        'available': True,
+        'version': bv.get_version(),
+        'path': bv.get_bv_path()
+    })
+
+
+# Add bv tools to TOOLS registry
+TOOLS.update({
+    # Beads Viewer Integration
+    "bv_insights": {
+        "fn": tool_bv_insights,
+        "desc": "Graph analysis: bottlenecks, keystones, cycles, PageRank, Betweenness.",
+        "input": {"type": "object", "properties": {}, "required": []},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
+    },
+    "bv_plan": {
+        "fn": tool_bv_plan,
+        "desc": "Parallel execution plan with tracks.",
+        "input": {"type": "object", "properties": {}, "required": []},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
+    },
+    "bv_priority": {
+        "fn": tool_bv_priority,
+        "desc": "Priority recommendations based on graph analysis.",
+        "input": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Max issues to return (default 5)"}
+            },
+            "required": []
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
+    },
+    "bv_diff": {
+        "fn": tool_bv_diff,
+        "desc": "Compare issue changes between git revisions.",
+        "input": {
+            "type": "object",
+            "properties": {
+                "since": {"type": "string", "description": "Start revision (commit SHA, tag, branch, or date)"},
+                "as_of": {"type": "string", "description": "End revision (default: current state)"}
+            },
+            "required": []
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
+    },
+    "bv_tui": {
+        "fn": tool_bv_tui,
+        "desc": "Launch Beads Viewer TUI dashboard in new terminal.",
+        "input": {
+            "type": "object",
+            "properties": {
+                "recipe": {"type": "string", "description": "Filter preset (default, actionable, recent, blocked, high-impact, stale)"}
+            },
+            "required": []
+        },
+        "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True}
+    },
+    "bv_status": {
+        "fn": tool_bv_status,
+        "desc": "Check bv availability and version.",
+        "input": {"type": "object", "properties": {}, "required": []},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}
+    },
+})
+
+
+# ============================================================================
+# Village Dashboard Tool
+# ============================================================================
+
+async def tool_village_tui(args: dict) -> str:
+    """Launch Beads Village Dashboard TUI.
+    
+    Shows:
+    - Teams and agents online
+    - Tasks board (Kanban view)
+    - File locks and messages
+    - Real-time updates
+    """
+    import subprocess
+    import sys
+    
+    cmd = [sys.executable, '-m', 'beads_village.dashboard', WS]
+    
+    try:
+        if sys.platform == 'win32':
+            # Windows: start in new cmd window
+            subprocess.Popen(
+                f'start cmd /k {" ".join(cmd)}',
+                shell=True,
+                cwd=WS
+            )
+        elif sys.platform == 'darwin':
+            # macOS: use osascript to open Terminal
+            script = f'cd "{WS}" && {" ".join(cmd)}'
+            subprocess.Popen([
+                'osascript', '-e',
+                f'tell application "Terminal" to do script "{script}"'
+            ])
+        else:
+            # Linux: try common terminal emulators
+            import shutil
+            terminals = ['gnome-terminal', 'xterm', 'konsole', 'xfce4-terminal']
+            for term in terminals:
+                if shutil.which(term):
+                    if term == 'gnome-terminal':
+                        subprocess.Popen(
+                            [term, '--', 'bash', '-c', f'cd "{WS}" && {" ".join(cmd)}; read'],
+                            start_new_session=True
+                        )
+                    else:
+                        subprocess.Popen(
+                            [term, '-e', ' '.join(cmd)],
+                            cwd=WS,
+                            start_new_session=True
+                        )
+                    break
+            else:
+                return j({'error': 'No terminal emulator found'})
+        
+        return j({'ok': 1, 'message': 'Village Dashboard launched'})
+        
+    except Exception as e:
+        return j({'error': str(e)})
+
+
+# Add village_tui to TOOLS registry
+TOOLS.update({
+    "village_tui": {
+        "fn": tool_village_tui,
+        "desc": "Launch Beads Village Dashboard TUI in new terminal. Shows teams, agents, tasks, locks, messages with live updates.",
+        "input": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True}
+    }
+})
 
 
 if __name__ == "__main__":

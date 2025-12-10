@@ -21,7 +21,7 @@ This guide helps AI agents use Beads Village MCP correctly for task management a
 ### With Role-Based Assignment
 ```
 # Leader agent (creates and assigns tasks)
-1. init(leader=true)            → Join as leader
+1. init(leader=true, start_tui=true) → Join as leader, auto-launch dashboard
 2. add(title="...", tags=["fe"]) → Create task with role tag
 3. assign(id="bd-42", role="fe") → Assign to role (optional)
 
@@ -37,13 +37,37 @@ This guide helps AI agents use Beads Village MCP correctly for task management a
 
 ---
 
+## 📊 Dashboard (Human Monitoring)
+
+Launch the Textual dashboard to monitor agents, tasks, and messages:
+
+```bash
+# Manual launch
+python -m beads_village.dashboard [workspace_path]
+
+# Auto-launch when leader inits
+init(leader=true, start_tui=true)
+```
+
+### Dashboard Panels
+| Panel | Description |
+|-------|-------------|
+| Teams | Click to filter agents by team |
+| Agents | Online status, current task |
+| Tasks Board | Kanban (Open/In Progress/Blocked/Closed) |
+| Task Detail | Click task for full details + activity |
+| File Locks | Active reservations with TTL |
+| Messages | Recent broadcasts and done notifications |
+
+---
+
 ## 🎯 Decision Tree: Which Tool to Use?
 
 ### Starting a Session
 ```
 Q: Am I starting work?
 ├─ Yes → init() first, ALWAYS
-│   ├─ Am I the leader/coordinator? → init(leader=true)
+│   ├─ Am I the leader/coordinator? → init(leader=true, start_tui=true)
 │   ├─ Do I have a specialty? → init(role="fe/be/mobile/devops/qa")
 │   └─ General agent → init()
 └─ Already called init() → proceed to claim() or ready()
@@ -394,6 +418,28 @@ claim()
 | `sync` | Force git sync | - | `{ok}` |
 | `cleanup` | Remove old closed issues | `days` | `{deleted}` |
 | `doctor` | Fix database issues | - | Health report |
+
+---
+
+## 🔍 Beads Viewer Tools (Optional)
+
+If `bv` binary is installed, additional graph analysis tools are available:
+
+### bv_insights()
+Get pre-computed graph metrics:
+- **Bottlenecks**: Issues with high betweenness centrality
+- **Keystones**: Critical path issues with zero slack
+- **Cycles**: Circular dependency detection
+- **Hubs/Authorities**: HITS algorithm results
+
+### bv_priority(limit=5)
+Get priority recommendations ranked by impact score.
+
+### bv_plan()
+Get parallel execution tracks for multi-agent coordination.
+
+### bv_tui()
+Launch TUI dashboard for human monitoring.
 
 ---
 
