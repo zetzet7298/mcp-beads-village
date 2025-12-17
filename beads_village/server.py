@@ -210,7 +210,7 @@ async def _bd_via_daemon(daemon: BdDaemonClient, args: tuple) -> dict:
     
     elif cmd == "list":
         status = None
-        limit = 10
+        limit = 50
         for i, arg in enumerate(args):
             if arg == "--status" and i + 1 < len(args):
                 status = args[i + 1]
@@ -862,7 +862,10 @@ async def tool_claim(_args: dict) -> str:
     Tasks with tags that don't match agent's role are filtered out.
     """
     # Sync first to get latest state
-    await bd("sync")
+    try:
+        await bd("sync", "--flush-only", timeout=30.0)
+    except Exception:
+        pass  # Don't fail if sync fails
 
     # Get ready issues
     r = await bd("ready")
@@ -961,7 +964,10 @@ async def tool_done(args: dict) -> str:
         S.reserved_files.clear()
 
     # Sync to share with other agents
-    await bd("sync")
+    try:
+        await bd("sync", "--flush-only", timeout=30.0)
+    except Exception:
+        pass  # Don't fail if sync fails
 
     # Notify
     await send_msg(f"done:{issue_id}", msg, importance="high")
@@ -1149,7 +1155,7 @@ async def tool_ls(args: dict) -> str:
     - status='ready' returns issues with no blockers (replaces separate 'ready' tool)
     """
     status = args.get("status", "open")
-    limit = min(args.get("limit", 10), 50)  # Cap at 50
+    limit = min(args.get("limit", 50), 1000)  # Cap at 1000, default 50
     offset = args.get("offset", 0)
 
     # Handle 'ready' status specially - uses bd ready command
@@ -1252,8 +1258,8 @@ async def tool_cleanup(args: dict) -> str:
     """Cleanup old closed issues (run every few days)."""
     days = args.get("days", 2)
     
-    r = await bd("cleanup", "--days", str(days))
-    await bd("sync")
+    r = await bd("cleanup", "--days", str(days), timeout=60.0)
+    await bd("sync", "--flush-only", timeout=30.0)  # Use flush-only to avoid git conflicts
     
     return j({
         "ok": 1,
@@ -1264,13 +1270,41 @@ async def tool_cleanup(args: dict) -> str:
 
 async def tool_doctor(_args: dict) -> str:
     """Check and fix beads health."""
-    r = await bd("doctor", "--fix")
+    try:
+        # Try basic doctor check first (without --fix)
+        r = await bd("doctor", timeout=30.0)
+        if r.get("error"):
+            # If basic check fails, try with --fix but shorter timeout
+            r = await bd("doctor", "--fix", timeout=60.0)
+    except Exception as e:
+        # Fallback: return basic health info
+        try:
+            issues = await bd("list", "--status", "all")
+            total = len(issues) if isinstance(issues, list) else 0
+            return j({
+                "health": "partial_check",
+                "total_issues": total,
+                "error": f"Doctor timeout: {str(e)}",
+                "hint": "Database appears functional but full health check timed out"
+            })
+        except Exception:
+            return j({
+                "error": "Doctor check failed",
+                "hint": "Unable to perform health check - database may need manual inspection"
+            })
     return j(r)
 
 
 async def tool_sync(_args: dict) -> str:
     """Sync beads with git."""
-    r = await bd("sync")
+    # Try flush-only first to avoid git worktree conflicts
+    try:
+        r = await bd("sync", "--flush-only", timeout=60.0)
+        if r.get("error"):
+            # If flush-only fails, try basic sync without git operations
+            r = await bd("sync", "--no-pull", "--no-push", timeout=60.0)
+    except Exception as e:
+        r = {"error": f"Sync failed: {str(e)}"}
     return j({"ok": 1, "result": r})
 
 
@@ -1590,7 +1624,7 @@ TOOLS = {
             "type": "object",
             "properties": {
                 "status": {"type": "string", "description": "open|closed|in_progress|ready|all"},
-                "limit": {"type": "integer", "description": "Max results (default:10)"},
+                "limit": {"type": "integer", "description": "Max results (default:50, max:1000)"},
                 "offset": {"type": "integer", "description": "Skip N issues"}
             },
             "required": []
@@ -1873,7 +1907,26 @@ async def tool_bv_insights(_args: dict) -> str:
     """
     bv = _get_bv()
     if not bv.is_available:
-        return j({'error': 'bv not available', 'hint': 'Install bv for graph analysis'})
+        # Fallback: basic insights from issue data
+        try:
+            issues = await bd("list", "--status", "open")
+            if isinstance(issues, list):
+                total = len(issues)
+                critical = len([i for i in issues if i.get('priority', 99) == 0])
+                blocked = len([i for i in issues if i.get('dependencies', [])])
+                return j({
+                    'insights': {
+                        'total_issues': total,
+                        'critical_issues': critical,
+                        'blocked_issues': blocked,
+                        'ready_issues': total - blocked
+                    },
+                    'fallback': True,
+                    'hint': 'Install bv for advanced graph analysis: go install github.com/Dicklesworthstone/beads_viewer/cmd/bv@latest'
+                })
+        except Exception:
+            pass
+        return j({'error': 'bv not available', 'hint': 'Install bv: go install github.com/Dicklesworthstone/beads_viewer/cmd/bv@latest'})
     return j(bv.get_insights())
 
 
@@ -1885,7 +1938,21 @@ async def tool_bv_plan(_args: dict) -> str:
     """
     bv = _get_bv()
     if not bv.is_available:
-        return j({'error': 'bv not available', 'hint': 'Install bv for execution planning'})
+        # Fallback: basic parallel tracks based on dependencies
+        try:
+            issues = await bd("list", "--status", "open")
+            if isinstance(issues, list):
+                # Simple grouping: issues without dependencies can run in parallel
+                independent = [i for i in issues if not i.get('dependencies', [])]
+                dependent = [i for i in issues if i.get('dependencies', [])]
+                return j({
+                    'tracks': [independent[:5], dependent[:5]] if independent else [issues[:5]], 
+                    'fallback': True,
+                    'hint': 'Install bv for advanced dependency analysis'
+                })
+        except Exception:
+            pass
+        return j({'error': 'bv not available', 'hint': 'Install bv: go install github.com/Dicklesworthstone/beads_viewer/cmd/bv@latest'})
     return j(bv.get_plan())
 
 
@@ -1905,7 +1972,16 @@ async def tool_bv_priority(args: dict) -> str:
     limit = args.get("limit", 5)
     bv = _get_bv()
     if not bv.is_available:
-        return j({'error': 'bv not available', 'hint': 'Install bv for priority recommendations'})
+        # Fallback: return basic priority based on beads priority field
+        try:
+            issues = await bd("list", "--status", "open")
+            if isinstance(issues, list):
+                # Sort by priority (0=critical, 1=high, 2=normal, etc.)
+                sorted_issues = sorted(issues, key=lambda x: x.get('priority', 99))[:limit]
+                return j({'priority': sorted_issues, 'fallback': True, 'hint': 'Install bv for advanced graph analysis'})
+        except Exception:
+            pass
+        return j({'error': 'bv not available', 'hint': 'Install bv: go install github.com/Dicklesworthstone/beads_viewer/cmd/bv@latest'})
     return j(bv.get_priority(limit))
 
 
@@ -1925,7 +2001,20 @@ async def tool_bv_diff(args: dict) -> str:
     as_of = args.get("as_of")
     bv = _get_bv()
     if not bv.is_available:
-        return j({'error': 'bv not available', 'hint': 'Install bv for diff analysis'})
+        # Fallback: basic diff using git log if available
+        try:
+            if since:
+                # Try to get basic git info
+                result = await bd("list", "--status", "all")
+                if isinstance(result, list):
+                    return j({
+                        'diff': f'Found {len(result)} total issues',
+                        'fallback': True,
+                        'hint': 'Install bv for detailed git diff analysis: go install github.com/Dicklesworthstone/beads_viewer/cmd/bv@latest'
+                    })
+        except Exception:
+            pass
+        return j({'error': 'bv not available', 'hint': 'Install bv: go install github.com/Dicklesworthstone/beads_viewer/cmd/bv@latest'})
     return j(bv.get_diff(since, as_of))
 
 
@@ -1941,11 +2030,17 @@ async def tool_bv_tui(args: dict) -> str:
     Args:
         recipe: Filter preset (default, actionable, recent, blocked, high-impact, stale)
     """
-    recipe = args.get("recipe")
-    bv = _get_bv()
-    if not bv.is_available:
-        return j({'error': 'bv not available', 'hint': 'Install bv for TUI dashboard'})
-    return j(bv.start_tui(recipe))
+    try:
+        recipe = args.get("recipe")
+        bv = _get_bv()
+        if not bv.is_available:
+            return j({'error': 'bv not available', 'hint': 'Install bv: go install github.com/Dicklesworthstone/beads_viewer/cmd/bv@latest'})
+        return j(bv.start_tui(recipe))
+    except Exception as e:
+        return j({
+            'error': f'TUI launch failed: {str(e)}',
+            'hint': 'Install bv and ensure terminal emulator is available'
+        })
 
 
 async def tool_bv_status(_args: dict) -> str:
@@ -1953,17 +2048,24 @@ async def tool_bv_status(_args: dict) -> str:
     
     Returns bv binary status and version info.
     """
-    bv = _get_bv()
-    if not bv.is_available:
+    try:
+        bv = _get_bv()
+        if not bv.is_available:
+            return j({
+                'available': False,
+                'hint': 'Install bv: go install github.com/Dicklesworthstone/beads_viewer/cmd/bv@latest'
+            })
+        return j({
+            'available': True,
+            'version': bv.get_version(),
+            'path': bv.get_bv_path()
+        })
+    except Exception as e:
         return j({
             'available': False,
+            'error': str(e),
             'hint': 'Install bv: go install github.com/Dicklesworthstone/beads_viewer/cmd/bv@latest'
         })
-    return j({
-        'available': True,
-        'version': bv.get_version(),
-        'path': bv.get_bv_path()
-    })
 
 
 # Add bv tools to TOOLS registry

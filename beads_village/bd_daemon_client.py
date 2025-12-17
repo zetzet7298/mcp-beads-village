@@ -313,7 +313,7 @@ class BdDaemonClient:
     async def list_issues(
         self,
         status: Optional[str] = None,
-        limit: int = 10,
+        limit: int = 50,
     ) -> List[Dict[str, Any]]:
         """List issues via daemon."""
         args: Dict[str, Any] = {}
