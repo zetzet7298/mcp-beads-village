@@ -109,6 +109,28 @@ Add to VS Code `settings.json`:
 </details>
 
 <details>
+<summary><strong>Letta Cloud (HTTP/SSE)</strong></summary>
+
+Letta Cloud requires HTTP/SSE servers. Start Beads Village in HTTP mode:
+
+```bash
+# Install with HTTP dependencies
+pip install beads-village[http]
+
+# Start HTTP server
+beads-village-http --port 8080
+```
+
+Then in Letta Cloud:
+1. Go to **Tools** → **Tool Manager** → **+ Add MCP server**
+2. Choose **SSE** as Server Type
+3. Server Name: `beads-village`
+4. Server URL: `http://://localhost:8080/mcp`
+5. Click **Test connection**
+
+</details>
+
+<details>
 <summary><strong>More IDEs (OpenCode, Cline, Roo Code, Zed, Continue...)</strong></summary>
 
 See **[📖 Full Setup Guide](docs/SETUP.md)** for complete configuration instructions for all supported IDEs and agents.

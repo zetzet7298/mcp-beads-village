@@ -48,5 +48,15 @@
     "current_task": null,
     "last_seen": 1765461865.2166793,
     "started_at": 1765461865.2166793
+  },
+  "agent-2138728": {
+    "agent_id": "agent-2138728",
+    "team": "default",
+    "role": "be",
+    "workspace": "/var/www/droid-kit/mcp-beads-village",
+    "is_leader": true,
+    "current_task": null,
+    "last_seen": 1766055421.712744,
+    "started_at": 1766055421.7127452
   }
 }

@@ -1,0 +1,32 @@
+version: "3.8"
+
+services:
+  beads-village:
+    build: .
+    container_name: beads-village
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount the target workspace to /workspace in container
+      # This allows the agent to read/write files and .beads issues in your project
+      - ../:/workspace
+      
+      # Persist global data (agent mail, registry)
+      - beads_data:/root/.beads-village
+    environment:
+      # Tell beads-village to operate on the mounted workspace
+      - BEADS_WS=/workspace
+      
+      # Team name (optional)
+      - BEADS_TEAM=default
+      
+      # Agent name (optional)
+      - BEADS_AGENT=beads-docker
+      
+      # Disable uvicorn access logs for cleaner output
+      # (Application logs will still show)
+      - ACCESS_LOG=False
+    restart: unless-stopped
+
+volumes:
+  beads_data:
